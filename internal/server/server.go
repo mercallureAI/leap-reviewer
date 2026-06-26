@@ -1,0 +1,222 @@
+package server
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	"github.com/cryolitia/gitea-ai-bot/internal/config"
+	"github.com/cryolitia/gitea-ai-bot/internal/core"
+	"github.com/cryolitia/gitea-ai-bot/internal/platform/gitea"
+	"github.com/cryolitia/gitea-ai-bot/internal/profiles"
+	"github.com/cryolitia/gitea-ai-bot/internal/triggers"
+)
+
+type Reviewer interface {
+	Execute(context.Context, core.ReviewRequest) (core.ReviewResult, error)
+}
+
+type Publisher interface {
+	Publish(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, core.ReviewResult) error
+}
+
+type Loader interface {
+	Load(instanceKey, owner, repo, profile string) (config.EffectiveRepositoryConfig, any, error)
+}
+
+type Handler struct {
+	InstanceKey string
+	Adapter     gitea.Adapter
+	Loader      interface {
+		Load(instanceKey, owner, repo, profile string) (config.EffectiveRepositoryConfig, profiles.Definition, error)
+	}
+	Reviewer interface {
+		Execute(context.Context, core.ReviewRequest) (core.ReviewResult, error)
+	}
+	Publisher interface {
+		Publish(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, core.ReviewResult) error
+	}
+}
+
+func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	event := r.Header.Get("X-Gitea-Event")
+	var req core.ReviewRequest
+	var handled bool
+	switch event {
+	case "issue_comment":
+		req, handled, err = ParseIssueCommentTrigger(body, "default")
+	case "pull_request":
+		req, handled, err = ParsePullRequestTrigger(body)
+	default:
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !handled {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	req.InstanceKey = h.InstanceKey
+	req.DeliveryPath = "daemon"
+
+	effective, _, err := h.Loader.Load(h.InstanceKey, req.Owner, req.Repo, req.ProfileName)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !gitea.VerifyWebhookSignature(effective.Auth.WebhookSecret, body, r.Header.Get("X-Gitea-Signature")) {
+		http.Error(w, "invalid signature", http.StatusUnauthorized)
+		return
+	}
+	if req.TriggerType == "event" && !allowsAutoEvent(effective.Config, req.EventName) {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if req.TriggerType == "command" && !allowsCommand(effective.Config, "review") {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+
+	result, err := h.Reviewer.Execute(r.Context(), req)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := h.Publisher.Publish(r.Context(), effective, req, result); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+type webhookIssueComment struct {
+	Action  string `json:"action"`
+	IsPull  bool   `json:"is_pull"`
+	Comment struct {
+		Body string `json:"body"`
+		ID   int64  `json:"id"`
+	} `json:"comment"`
+	Repository struct {
+		Owner struct {
+			UserName string `json:"username"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	} `json:"repository"`
+	Issue struct {
+		Number int `json:"number"`
+	} `json:"issue"`
+	Sender struct {
+		UserName string `json:"username"`
+	} `json:"sender"`
+}
+
+type webhookPullRequest struct {
+	Action     string `json:"action"`
+	Number     int    `json:"number"`
+	Repository struct {
+		Owner struct {
+			UserName string `json:"username"`
+		} `json:"owner"`
+		Name string `json:"name"`
+	} `json:"repository"`
+	PullRequest struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	} `json:"pull_request"`
+	Sender struct {
+		UserName string `json:"username"`
+	} `json:"sender"`
+}
+
+func ParseIssueCommentTrigger(payload []byte, defaultProfile string) (core.ReviewRequest, bool, error) {
+	var event webhookIssueComment
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return core.ReviewRequest{}, false, err
+	}
+	if !event.IsPull || event.Action != "created" {
+		return core.ReviewRequest{}, false, nil
+	}
+	command, ok := triggers.ParseReviewCommand(event.Comment.Body, defaultProfile)
+	if !ok {
+		return core.ReviewRequest{}, false, nil
+	}
+	return core.ReviewRequest{
+		TriggerType:      "command",
+		CommandText:      command.Raw,
+		ProfileName:      command.ProfileName,
+		Owner:            event.Repository.Owner.UserName,
+		Repo:             event.Repository.Name,
+		PRNumber:         event.Issue.Number,
+		TriggerUser:      event.Sender.UserName,
+		TriggerCommentID: event.Comment.ID,
+		Publish:          true,
+	}, true, nil
+}
+
+func ParsePullRequestTrigger(payload []byte) (core.ReviewRequest, bool, error) {
+	var event webhookPullRequest
+	if err := json.Unmarshal(payload, &event); err != nil {
+		return core.ReviewRequest{}, false, err
+	}
+	action := strings.ToLower(event.Action)
+	if action != "opened" && action != "synchronize" && action != "reopened" {
+		return core.ReviewRequest{}, false, nil
+	}
+	return core.ReviewRequest{
+		TriggerType: "event",
+		EventName:   BuildAutoEventName("pull_request", action),
+		Owner:       event.Repository.Owner.UserName,
+		Repo:        event.Repository.Name,
+		PRNumber:    event.Number,
+		HeadSHA:     event.PullRequest.Head.SHA,
+		TriggerUser: event.Sender.UserName,
+		Publish:     true,
+	}, true, nil
+}
+
+func BuildAutoEventName(event, action string) string {
+	if event == "pull_request" {
+		return fmt.Sprintf("pull_request.%s", strings.ToLower(action))
+	}
+	return event
+}
+
+func allowsAutoEvent(cfg config.Config, eventName string) bool {
+	if !cfg.AutoReviewEnabled {
+		return false
+	}
+	for _, allowed := range cfg.AllowedAutoEvents {
+		if allowed == eventName {
+			return true
+		}
+	}
+	return false
+}
+
+func allowsCommand(cfg config.Config, command string) bool {
+	if !cfg.CommandReviewEnabled {
+		return false
+	}
+	for _, allowed := range cfg.AllowedCommands {
+		if allowed == command {
+			return true
+		}
+	}
+	return false
+}
