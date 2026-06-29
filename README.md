@@ -176,17 +176,23 @@ config/profiles/default/
 - 每次审阅会建立独立 worktree 目录
 - 已加入 repo 级文件锁，避免多个进程同时 `git fetch` 竞争 `shallow.lock`
 
-## `oneshot` 模式
+## CLI 子命令
 
-`oneshot` 模式不依赖 `config.yaml`，只需要：
+当前 CLI 提供三个子命令：
+
+- `daemon`：启动 Gitea webhook 服务
+- `review`：对指定 PR 执行一次审阅
+- `ask`：对指定 PR 执行一次问答
+
+其中 `review` / `ask` 不依赖 `config.yaml`，只需要：
 
 - `profiles` 目录
 - 命令行参数
 
-### Gitea dry-run 示例
+### Gitea review dry-run 示例
 
 ```bash
-go run ./cmd/review-bot \
+go run ./cmd/review-bot review \
   --profiles-dir ./config/profiles \
   --platform gitea \
   --base-url http://gitea.example.com \
@@ -195,16 +201,17 @@ go run ./cmd/review-bot \
   --pr 123 \
   --provider openai \
   --model gpt-5.4 \
+  --timeout-seconds 300 \
   --trigger-type event \
   --event-name pull_request.opened \
   --dry-run \
   --token-env GITEA_TOKEN_DEFAULT
 ```
 
-### Gitea wet-run 示例
+### Gitea review wet-run 示例
 
 ```bash
-go run ./cmd/review-bot \
+go run ./cmd/review-bot review \
   --profiles-dir ./config/profiles \
   --platform gitea \
   --base-url http://gitea.example.com \
@@ -213,6 +220,7 @@ go run ./cmd/review-bot \
   --pr 123 \
   --provider openai \
   --model gpt-5.4 \
+  --timeout-seconds 300 \
   --trigger-type event \
   --event-name pull_request.opened \
   --publish \
@@ -222,7 +230,7 @@ go run ./cmd/review-bot \
 ### GitHub dry-run 示例
 
 ```bash
-go run ./cmd/review-bot \
+go run ./cmd/review-bot review \
   --profiles-dir ./config/profiles \
   --platform github \
   --owner nixos \
@@ -230,15 +238,35 @@ go run ./cmd/review-bot \
   --pr 530373 \
   --provider openai \
   --model gpt-5.4 \
+  --timeout-seconds 300 \
   --trigger-type event \
   --event-name pull_request.opened \
   --dry-run
+```
+
+### Gitea ask 示例
+
+```bash
+go run ./cmd/review-bot ask \
+  --profiles-dir ./config/profiles \
+  --platform gitea \
+  --base-url http://gitea.example.com \
+  --owner team \
+  --repo service \
+  --pr 123 \
+  --provider openai \
+  --model gpt-5.4 \
+  --timeout-seconds 300 \
+  --question "为什么这里要拆成两个 service？" \
+  --dry-run \
+  --token-env GITEA_TOKEN_DEFAULT
 ```
 
 说明：
 
 - GitHub 当前只允许 `dry-run`
 - 如果 Gitea 是私有实例，通常需要 `--token-env`
+- `review` 和 `ask` 都支持 `--timeout-seconds` 覆盖默认的 `opencode` 超时
 
 ## `daemon` 模式
 
@@ -247,8 +275,7 @@ go run ./cmd/review-bot \
 示例：
 
 ```bash
-go run ./cmd/review-bot \
-  --daemon \
+go run ./cmd/review-bot daemon \
   --instance corp-gitea \
   --config ./config \
   --listen :8080
@@ -261,7 +288,13 @@ go run ./cmd/review-bot \
 支持的触发来源：
 
 - 自动事件
-- PR 评论命令
+- PR 评论命令 `/review`
+- PR 评论命令 `/ask`
+
+`/ask` 支持两种格式：
+
+- `/ask <问题>`
+- `/ask <profile> <问题>`
 
 ## 平台差异
 

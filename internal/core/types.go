@@ -11,6 +11,7 @@ type ReviewRequest struct {
 	TriggerType      string
 	EventName        string
 	CommandText      string
+	QuestionText     string
 	TriggerUser      string
 	TriggerCommentID int64
 	ProfileName      string
@@ -45,4 +46,9 @@ type ReviewResult struct {
 	GeneralComments []ReviewComment `json:"general_comments" yaml:"general_comments"`
 	InlineFindings  []InlineFinding `json:"inline_findings" yaml:"inline_findings"`
 	Warnings        []string        `json:"warnings" yaml:"warnings"`
+}
+
+type AskResult struct {
+	Answer   string   `json:"answer" yaml:"answer"`
+	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty"`
 }

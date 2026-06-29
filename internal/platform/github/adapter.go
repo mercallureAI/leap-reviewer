@@ -66,6 +66,10 @@ func (a Adapter) PublishReview(context.Context, config.EffectiveRepositoryConfig
 	return nil
 }
 
+func (a Adapter) PublishComment(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error {
+	return nil
+}
+
 func (a Adapter) getJSON(ctx context.Context, effective config.EffectiveRepositoryConfig, endpoint string, dst any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, joinURL(effective.BaseURL, endpoint), nil)
 	if err != nil {

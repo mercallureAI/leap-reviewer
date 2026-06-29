@@ -1,0 +1,39 @@
+models:
+  default-review:
+    provider: openai
+    model: gpt-4.1-mini
+  default-ask:
+    provider: openai
+    model: gpt-5.4
+
+instances:
+  github-public:
+    platform: github
+    base_url: https://api.github.com
+    config:
+      review_model: default-review
+      ask_model: default-ask
+      opencode_timeout_seconds: 300
+      auto_review_enabled: false
+      command_review_enabled: true
+      allowed_auto_events: []
+      allowed_commands:
+        - review
+        - ask
+      default_profile: default
+      enabled_profiles:
+        - default
+      publish_summary_comment: false
+      publish_inline_comments: false
+      inline_comment_limit: 5
+      inline_fallback_to_general: true
+      ignore_draft_prs: true
+      ignore_bot_prs: true
+      ignore_bot_comments: true
+      dry_run_default: true
+    owners:
+      nixos:
+        config: {}
+        repos:
+          nixpkgs:
+            config: {}

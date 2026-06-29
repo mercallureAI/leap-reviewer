@@ -27,7 +27,8 @@ func TestNewOneShotLoaderLoadsProfilesWithoutConfigFile(t *testing.T) {
 		Repo:        "nixpkgs",
 		Platform:    "github",
 		BaseURL:     "https://api.github.com",
-		Model:       config.ModelDefinition{Provider: "openai", Model: "gpt-5.4"},
+		ReviewModel: config.ModelDefinition{Provider: "openai", Model: "gpt-4.1-mini"},
+		AskModel:    config.ModelDefinition{Provider: "openai", Model: "gpt-5.4"},
 		Config: config.Config{
 			DefaultProfile:    "default",
 			EnabledProfiles:   []string{"default"},

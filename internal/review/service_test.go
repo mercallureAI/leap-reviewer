@@ -26,8 +26,10 @@ func TestServiceExecuteBuildsPromptAndParsesExecutorResult(t *testing.T) {
 					EnabledProfiles:       []string{"default"},
 					InlineCommentLimit:    5,
 					PublishInlineComments: true,
+					OpencodeTimeoutSeconds: 420,
 				},
-				Model: config.ModelDefinition{Provider: "openai", Model: "gpt-4.1-mini"},
+				ReviewModel: config.ModelDefinition{Provider: "openai", Model: "gpt-4.1-mini"},
+				AskModel:    config.ModelDefinition{Provider: "openai", Model: "gpt-5.4"},
 			},
 			profile: profiles.Definition{Name: "default", Prompt: "check for bugs", InlineEnabled: true, InlineLimit: 5},
 		},
@@ -48,6 +50,9 @@ func TestServiceExecuteBuildsPromptAndParsesExecutorResult(t *testing.T) {
 	workspace := svc.Workspace.(*fakeWorkspace)
 	if got, want := exec.last.Provider, "openai"; got != want {
 		t.Fatalf("provider = %q, want %q", got, want)
+	}
+	if got, want := exec.last.TimeoutSeconds, 420; got != want {
+		t.Fatalf("timeout = %d, want %d", got, want)
 	}
 	if got, want := workspace.last.HeadSHA, "abc123"; got != want {
 		t.Fatalf("workspace head sha = %q, want %q", got, want)
@@ -75,6 +80,18 @@ func TestSystemPromptIsEmbedded(t *testing.T) {
 func TestSystemPromptSourcePathIsExplicit(t *testing.T) {
 	if got, want := systemPromptSourcePath(), filepath.Join("internal", "review", "prompts", "system.md"); got != want {
 		t.Fatalf("systemPromptSourcePath() = %q, want %q", got, want)
+	}
+}
+
+func TestInstructionPromptIsEmbedded(t *testing.T) {
+	if got := embeddedInstructionPrompt(); !strings.Contains(got, "structured JSON review result") {
+		t.Fatalf("embeddedInstructionPrompt() = %q, want embedded markdown content", got)
+	}
+}
+
+func TestInstructionPromptSourcePathIsExplicit(t *testing.T) {
+	if got, want := instructionPromptSourcePath(), filepath.Join("internal", "review", "prompts", "instructions.md"); got != want {
+		t.Fatalf("instructionPromptSourcePath() = %q, want %q", got, want)
 	}
 }
 

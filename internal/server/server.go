@@ -39,6 +39,12 @@ type Handler struct {
 	Publisher interface {
 		Publish(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, core.ReviewResult) error
 	}
+	AskReviewer interface {
+		Execute(context.Context, core.ReviewRequest) (core.AskResult, error)
+	}
+	CommentPublisher interface {
+		PublishComment(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error
+	}
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -54,9 +60,28 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	event := r.Header.Get("X-Gitea-Event")
 	var req core.ReviewRequest
 	var handled bool
+	var effective config.EffectiveRepositoryConfig
 	switch event {
 	case "issue_comment":
-		req, handled, err = ParseIssueCommentTrigger(body, "default")
+		var issueEvent webhookIssueComment
+		if err = json.Unmarshal(body, &issueEvent); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !issueEvent.IsPull || issueEvent.Action != "created" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		effective, _, err = h.Loader.Load(h.InstanceKey, issueEvent.Repository.Owner.UserName, issueEvent.Repository.Name, "")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !gitea.VerifyWebhookSignature(effective.Auth.WebhookSecret, body, r.Header.Get("X-Gitea-Signature")) {
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
+		}
+		req, handled, err = ParseIssueCommentTrigger(body, effective.Config.DefaultProfile, effective.Config.EnabledProfiles)
 	case "pull_request":
 		req, handled, err = ParsePullRequestTrigger(body)
 	default:
@@ -74,20 +99,35 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	req.InstanceKey = h.InstanceKey
 	req.DeliveryPath = "daemon"
 
-	effective, _, err := h.Loader.Load(h.InstanceKey, req.Owner, req.Repo, req.ProfileName)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if !gitea.VerifyWebhookSignature(effective.Auth.WebhookSecret, body, r.Header.Get("X-Gitea-Signature")) {
-		http.Error(w, "invalid signature", http.StatusUnauthorized)
-		return
+	if event != "issue_comment" {
+		effective, _, err = h.Loader.Load(h.InstanceKey, req.Owner, req.Repo, req.ProfileName)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !gitea.VerifyWebhookSignature(effective.Auth.WebhookSecret, body, r.Header.Get("X-Gitea-Signature")) {
+			http.Error(w, "invalid signature", http.StatusUnauthorized)
+			return
+		}
 	}
 	if req.TriggerType == "event" && !allowsAutoEvent(effective.Config, req.EventName) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
-	if req.TriggerType == "command" && !allowsCommand(effective.Config, "review") {
+	if req.TriggerType == "command" && !allowsCommand(effective.Config, commandName(req.CommandText)) {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if req.QuestionText != "" {
+		result, err := h.AskReviewer.Execute(r.Context(), req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if err := h.CommentPublisher.PublishComment(r.Context(), effective, req, formatAskComment(req.TriggerUser, req.QuestionText, result.Answer)); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -144,7 +184,7 @@ type webhookPullRequest struct {
 	} `json:"sender"`
 }
 
-func ParseIssueCommentTrigger(payload []byte, defaultProfile string) (core.ReviewRequest, bool, error) {
+func ParseIssueCommentTrigger(payload []byte, defaultProfile string, enabledProfiles []string) (core.ReviewRequest, bool, error) {
 	var event webhookIssueComment
 	if err := json.Unmarshal(payload, &event); err != nil {
 		return core.ReviewRequest{}, false, err
@@ -152,13 +192,14 @@ func ParseIssueCommentTrigger(payload []byte, defaultProfile string) (core.Revie
 	if !event.IsPull || event.Action != "created" {
 		return core.ReviewRequest{}, false, nil
 	}
-	command, ok := triggers.ParseReviewCommand(event.Comment.Body, defaultProfile)
+	command, ok := triggers.ParseCommand(event.Comment.Body, defaultProfile, enabledProfiles)
 	if !ok {
 		return core.ReviewRequest{}, false, nil
 	}
 	return core.ReviewRequest{
 		TriggerType:      "command",
 		CommandText:      command.Raw,
+		QuestionText:     command.Question,
 		ProfileName:      command.ProfileName,
 		Owner:            event.Repository.Owner.UserName,
 		Repo:             event.Repository.Name,
@@ -167,6 +208,22 @@ func ParseIssueCommentTrigger(payload []byte, defaultProfile string) (core.Revie
 		TriggerCommentID: event.Comment.ID,
 		Publish:          true,
 	}, true, nil
+}
+
+func commandName(commandText string) string {
+	trimmed := strings.TrimSpace(commandText)
+	if trimmed == "" {
+		return ""
+	}
+	parts := strings.Fields(trimmed)
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.TrimPrefix(parts[0], "/")
+}
+
+func formatAskComment(user, question, answer string) string {
+	return fmt.Sprintf("@%s\n\n问题：\n%s\n\n回答：\n%s", user, question, answer)
 }
 
 func ParsePullRequestTrigger(payload []byte) (core.ReviewRequest, bool, error) {

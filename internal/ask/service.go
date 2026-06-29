@@ -1,64 +1,32 @@
-package review
+package ask
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/cryolitia/gitea-ai-bot/internal/config"
 	"github.com/cryolitia/gitea-ai-bot/internal/core"
 	"github.com/cryolitia/gitea-ai-bot/internal/profiles"
+	"github.com/cryolitia/gitea-ai-bot/internal/review"
 )
-
-type ChangedFile struct {
-	Path  string
-	Patch string
-}
-
-type PullRequestContext struct {
-	Title        string
-	Body         string
-	CloneURL     string
-	HeadSHA      string
-	HeadRef      string
-	FilesChanged []ChangedFile
-}
-
-type PrepareRequest struct {
-	InstanceKey string
-	Owner       string
-	Repo        string
-	HeadSHA     string
-	HeadRef     string
-	RepoURL     string
-}
-
-type PreparedWorkspace struct {
-	Path string
-}
-
-type ExecuteRequest struct {
-	Provider  string
-	Model     string
-	Workspace string
-	Prompt    string
-	TimeoutSeconds int
-}
 
 type ConfigProfileLoader interface {
 	Load(instanceKey, owner, repo, profile string) (config.EffectiveRepositoryConfig, profiles.Definition, error)
 }
 
 type Platform interface {
-	GetPullRequestContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (PullRequestContext, error)
+	GetPullRequestContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error)
 }
 
 type WorkspacePreparer interface {
-	Prepare(context.Context, PrepareRequest) (PreparedWorkspace, error)
+	Prepare(context.Context, review.PrepareRequest) (review.PreparedWorkspace, error)
 }
 
 type Runner interface {
-	Run(context.Context, ExecuteRequest) (core.ReviewResult, error)
+	RunText(context.Context, review.ExecuteRequest) (string, error)
 }
 
 type Service struct {
@@ -69,17 +37,17 @@ type Service struct {
 	Progress  func(string)
 }
 
-func (s Service) Execute(ctx context.Context, req core.ReviewRequest) (core.ReviewResult, error) {
+func (s Service) Execute(ctx context.Context, req core.ReviewRequest) (core.AskResult, error) {
 	s.progress("loading config and profile")
 	effective, profile, err := s.Loader.Load(req.InstanceKey, req.Owner, req.Repo, req.ProfileName)
 	if err != nil {
-		return core.ReviewResult{}, err
+		return core.AskResult{}, err
 	}
 
 	s.progress("fetching pull request context")
 	prContext, err := s.Platform.GetPullRequestContext(ctx, effective, req)
 	if err != nil {
-		return core.ReviewResult{}, err
+		return core.AskResult{}, err
 	}
 
 	headSHA := req.HeadSHA
@@ -88,7 +56,7 @@ func (s Service) Execute(ctx context.Context, req core.ReviewRequest) (core.Revi
 	}
 
 	s.progress("preparing workspace")
-	workspace, err := s.Workspace.Prepare(ctx, PrepareRequest{
+	workspace, err := s.Workspace.Prepare(ctx, review.PrepareRequest{
 		InstanceKey: req.InstanceKey,
 		Owner:       req.Owner,
 		Repo:        req.Repo,
@@ -97,24 +65,24 @@ func (s Service) Execute(ctx context.Context, req core.ReviewRequest) (core.Revi
 		RepoURL:     prContext.CloneURL,
 	})
 	if err != nil {
-		return core.ReviewResult{}, err
+		return core.AskResult{}, err
 	}
 
-	prompt := buildPrompt(profile, prContext)
-	s.progress("running opencode review")
-	result, err := s.Executor.Run(ctx, ExecuteRequest{
-		Provider:  effective.ReviewModel.Provider,
-		Model:     effective.ReviewModel.Model,
+	prompt := buildPrompt(profile, prContext, req.QuestionText)
+	s.progress("running opencode ask")
+	answer, err := s.Executor.RunText(ctx, review.ExecuteRequest{
+		Provider:  effective.AskModel.Provider,
+		Model:     effective.AskModel.Model,
 		Workspace: workspace.Path,
 		Prompt:    prompt,
 		TimeoutSeconds: effective.Config.OpencodeTimeoutSeconds,
 	})
 	if err != nil {
-		return core.ReviewResult{}, err
+		return core.AskResult{}, err
 	}
 
-	s.progress("review completed")
-	return result, nil
+	s.progress("ask completed")
+	return core.AskResult{Answer: answer}, nil
 }
 
 func (s Service) progress(message string) {
@@ -123,7 +91,7 @@ func (s Service) progress(message string) {
 	}
 }
 
-func buildPrompt(profile profiles.Definition, prContext PullRequestContext) string {
+func buildPrompt(profile profiles.Definition, prContext review.PullRequestContext, question string) string {
 	var b strings.Builder
 	b.WriteString(embeddedSystemPrompt())
 	b.WriteString("\n\n")
@@ -142,5 +110,30 @@ func buildPrompt(profile profiles.Definition, prContext PullRequestContext) stri
 	for _, file := range prContext.FilesChanged {
 		b.WriteString(fmt.Sprintf("File: %s\n%s\n", file.Path, file.Patch))
 	}
+	b.WriteString("Question: ")
+	b.WriteString(question)
+	b.WriteString("\n")
 	return b.String()
+}
+
+//go:embed prompts/system.md
+var systemPrompt string
+
+//go:embed prompts/instructions.md
+var instructionPrompt string
+
+func embeddedSystemPrompt() string {
+	return strings.TrimSpace(systemPrompt)
+}
+
+func embeddedInstructionPrompt() string {
+	return strings.TrimSpace(instructionPrompt)
+}
+
+func systemPromptSourcePath() string {
+	return filepath.Join("internal", "ask", "prompts", "system.md")
+}
+
+func instructionPromptSourcePath() string {
+	return filepath.Join("internal", "ask", "prompts", "instructions.md")
 }

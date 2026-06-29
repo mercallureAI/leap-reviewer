@@ -52,6 +52,10 @@ type createReviewRequest struct {
 	Comments []createReviewComment `json:"comments,omitempty"`
 }
 
+type createCommentRequest struct {
+	Body string `json:"body"`
+}
+
 func (a Adapter) GetPullRequestContext(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest) (review.PullRequestContext, error) {
 	prPath := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", effective.Owner, effective.Repo, req.PRNumber)
 	filesPath := prPath + "/files"
@@ -99,6 +103,11 @@ func (a Adapter) PublishReview(ctx context.Context, effective config.EffectiveRe
 
 	payload := createReviewRequest{Body: body, State: state, CommitID: req.HeadSHA, Comments: comments}
 	return a.postJSON(ctx, effective, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews", effective.Owner, effective.Repo, req.PRNumber), payload)
+}
+
+func (a Adapter) PublishComment(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest, body string) error {
+	payload := createCommentRequest{Body: body}
+	return a.postJSON(ctx, effective, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", effective.Owner, effective.Repo, req.PRNumber), payload)
 }
 
 func VerifyWebhookSignature(secret string, body []byte, signature string) bool {

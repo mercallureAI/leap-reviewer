@@ -33,13 +33,59 @@ func TestRunnerWritesResultFileInsideWorkspace(t *testing.T) {
 	}
 }
 
+func TestRunnerReturnsStdoutForTextRequests(t *testing.T) {
+	workspaceDir := t.TempDir()
+	stub := &stubExecutor{stdout: "direct answer\n"}
+	runner := Runner{Executor: stub}
+
+	answer, err := runner.RunText(context.Background(), review.ExecuteRequest{
+		Provider:  "openai",
+		Model:     "gpt-5.4",
+		Workspace: workspaceDir,
+		Prompt:    "answer the question",
+	})
+	if err != nil {
+		t.Fatalf("RunText() error = %v", err)
+	}
+	if got, want := answer, "direct answer"; got != want {
+		t.Fatalf("answer = %q, want %q", got, want)
+	}
+	if got := stub.request.ResultPath; got != "" {
+		t.Fatalf("ResultPath = %q, want empty", got)
+	}
+}
+
+func TestRunnerFallsBackToStderrForTextRequests(t *testing.T) {
+	workspaceDir := t.TempDir()
+	stub := &stubExecutor{stderr: "fallback answer\n"}
+	runner := Runner{Executor: stub}
+
+	answer, err := runner.RunText(context.Background(), review.ExecuteRequest{
+		Provider:  "openai",
+		Model:     "gpt-5.4",
+		Workspace: workspaceDir,
+		Prompt:    "answer the question",
+	})
+	if err != nil {
+		t.Fatalf("RunText() error = %v", err)
+	}
+	if got, want := answer, "fallback answer"; got != want {
+		t.Fatalf("answer = %q, want %q", got, want)
+	}
+}
+
 type stubExecutor struct {
 	request inner.Request
 	result  core.ReviewResult
+	stdout  string
+	stderr  string
 }
 
 func (s *stubExecutor) Execute(_ context.Context, req inner.Request) (inner.Result, error) {
 	s.request = req
+	if req.ResultPath == "" {
+		return inner.Result{Stdout: s.stdout, Stderr: s.stderr}, nil
+	}
 	return inner.Result{}, writeResult(req.ResultPath, s.result)
 }
 

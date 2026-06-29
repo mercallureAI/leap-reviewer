@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/cryolitia/gitea-ai-bot/internal/core"
 	inner "github.com/cryolitia/gitea-ai-bot/internal/executor/opencode"
@@ -38,6 +39,7 @@ func (r Runner) Run(ctx context.Context, req review.ExecuteRequest) (core.Review
 		Workspace:  req.Workspace,
 		Prompt:     req.Prompt,
 		ResultPath: resultFile,
+		TimeoutSeconds: req.TimeoutSeconds,
 	})
 	if err != nil {
 		return core.ReviewResult{}, err
@@ -47,4 +49,22 @@ func (r Runner) Run(ctx context.Context, req review.ExecuteRequest) (core.Review
 		return core.ReviewResult{}, fmt.Errorf("parse opencode result: %w", err)
 	}
 	return parsed, nil
+}
+
+func (r Runner) RunText(ctx context.Context, req review.ExecuteRequest) (string, error) {
+	result, err := r.Executor.Execute(ctx, inner.Request{
+		Provider:  req.Provider,
+		Model:     req.Model,
+		Workspace: req.Workspace,
+		Prompt:    req.Prompt,
+		TimeoutSeconds: req.TimeoutSeconds,
+	})
+	if err != nil {
+		return "", err
+	}
+	answer := strings.TrimSpace(result.Stdout)
+	if answer != "" {
+		return answer, nil
+	}
+	return strings.TrimSpace(result.Stderr), nil
 }

@@ -12,6 +12,42 @@ import (
 	"github.com/cryolitia/gitea-ai-bot/internal/core"
 )
 
+func TestParseCLIRecognizesDaemonCommand(t *testing.T) {
+	cli, command, err := parseCLI([]string{"daemon", "--instance", "corp-gitea"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if got, want := command, "daemon"; got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+	if got, want := cli.Daemon.Instance, "corp-gitea"; got != want {
+		t.Fatalf("instance = %q, want %q", got, want)
+	}
+}
+
+func TestParseCLIRecognizesAskCommand(t *testing.T) {
+	cli, command, err := parseCLI([]string{"ask", "--platform", "gitea", "--owner", "team", "--repo", "repo", "--pr", "42", "--provider", "openai", "--model", "gpt-5.4", "--question", "why split this", "--timeout-seconds", "90"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if got, want := command, "ask"; got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+	if got, want := cli.Ask.Question, "why split this"; got != want {
+		t.Fatalf("question = %q, want %q", got, want)
+	}
+	if got, want := cli.Ask.TimeoutSeconds, 90; got != want {
+		t.Fatalf("timeout = %d, want %d", got, want)
+	}
+}
+
+func TestParseCLIMissingAskQuestionFails(t *testing.T) {
+	_, _, err := parseCLI([]string{"ask", "--platform", "gitea", "--owner", "team", "--repo", "repo", "--pr", "42", "--provider", "openai", "--model", "gpt-5.4"})
+	if err == nil {
+		t.Fatal("parseCLI() error = nil, want missing question error")
+	}
+}
+
 func TestParseRepoSpec(t *testing.T) {
 	tests := []struct {
 		name     string

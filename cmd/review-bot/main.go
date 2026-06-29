@@ -1,15 +1,16 @@
 package main
 
 import (
-	"context"
 	"bufio"
-	"flag"
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 
+	"github.com/alecthomas/kong"
+	askservice "github.com/cryolitia/gitea-ai-bot/internal/ask"
 	"github.com/cryolitia/gitea-ai-bot/internal/config"
 	"github.com/cryolitia/gitea-ai-bot/internal/core"
 	"github.com/cryolitia/gitea-ai-bot/internal/executor"
@@ -25,49 +26,63 @@ import (
 	"github.com/cryolitia/gitea-ai-bot/internal/workspace"
 )
 
-func main() {
-	var daemon bool
-	var listen string
-	var configRoot string
-	var profilesDir string
-	var instance string
-	var platformName string
-	var baseURL string
-	var owner string
-	var repo string
-	var pr int
-	var headSHA string
-	var profile string
-	var provider string
-	var model string
-	var tokenEnv string
-	var publishFlag bool
-	var dryRun bool
-	var triggerType string
-	var eventName string
-	var command string
+type daemonCommand struct {
+	Listen string `default:":8080" help:"daemon listen address"`
+	Config string `default:"./config" help:"configuration root"`
+	Instance string `required:"" help:"instance key"`
+}
 
-	flag.BoolVar(&daemon, "daemon", false, "run webhook server")
-	flag.StringVar(&listen, "listen", ":8080", "daemon listen address")
-	flag.StringVar(&configRoot, "config", "./config", "configuration root")
-	flag.StringVar(&profilesDir, "profiles-dir", "", "profiles directory for oneshot mode")
-	flag.StringVar(&instance, "instance", "", "instance key")
-	flag.StringVar(&platformName, "platform", "", "platform name for oneshot mode")
-	flag.StringVar(&baseURL, "base-url", "", "platform API base URL for oneshot mode")
-	flag.StringVar(&owner, "owner", "", "repository owner")
-	flag.StringVar(&repo, "repo", "", "repository name")
-	flag.IntVar(&pr, "pr", 0, "pull request number")
-	flag.StringVar(&headSHA, "head-sha", "", "pull request head sha")
-	flag.StringVar(&profile, "profile", "", "profile name")
-	flag.StringVar(&provider, "provider", "", "opencode model provider for oneshot mode")
-	flag.StringVar(&model, "model", "", "opencode model name for oneshot mode")
-	flag.StringVar(&tokenEnv, "token-env", "", "environment variable holding platform token for oneshot mode")
-	flag.BoolVar(&publishFlag, "publish", false, "publish review back to platform")
-	flag.BoolVar(&dryRun, "dry-run", false, "skip publishing")
-	flag.StringVar(&triggerType, "trigger-type", "command", "trigger type")
-	flag.StringVar(&eventName, "event-name", "", "event name")
-	flag.StringVar(&command, "command", "", "raw command text")
-	flag.Parse()
+type reviewCommand struct {
+	Config      string `default:"./config" help:"configuration root"`
+	ProfilesDir string `help:"profiles directory for oneshot mode"`
+	Instance    string `help:"instance key"`
+	Platform    string `required:"" help:"platform name for oneshot mode"`
+	BaseURL     string `help:"platform API base URL for oneshot mode"`
+	Owner       string `required:"" help:"repository owner"`
+	Repo        string `required:"" help:"repository name"`
+	PR          int    `required:"" help:"pull request number"`
+	HeadSHA     string `help:"pull request head sha"`
+	Profile     string `help:"profile name"`
+	Provider    string `required:"" help:"opencode model provider for oneshot mode"`
+	Model       string `required:"" help:"opencode model name for oneshot mode"`
+	TimeoutSeconds int `default:"300" help:"opencode timeout in seconds"`
+	TokenEnv    string `help:"environment variable holding platform token for oneshot mode"`
+	Publish     bool   `help:"publish review back to platform"`
+	DryRun      bool   `help:"skip publishing"`
+	TriggerType string `default:"command" help:"trigger type"`
+	EventName   string `help:"event name"`
+	Command     string `help:"raw command text"`
+}
+
+type askCommand struct {
+	Config      string `default:"./config" help:"configuration root"`
+	ProfilesDir string `help:"profiles directory for oneshot mode"`
+	Instance    string `help:"instance key"`
+	Platform    string `required:"" help:"platform name for oneshot mode"`
+	BaseURL     string `help:"platform API base URL for oneshot mode"`
+	Owner       string `required:"" help:"repository owner"`
+	Repo        string `required:"" help:"repository name"`
+	PR          int    `required:"" help:"pull request number"`
+	HeadSHA     string `help:"pull request head sha"`
+	Profile     string `help:"profile name"`
+	Provider    string `required:"" help:"opencode model provider for oneshot mode"`
+	Model       string `required:"" help:"opencode model name for oneshot mode"`
+	TimeoutSeconds int `default:"300" help:"opencode timeout in seconds"`
+	Question    string `required:"" help:"question for the model"`
+	TokenEnv    string `help:"environment variable holding platform token for oneshot mode"`
+	Publish     bool   `help:"publish answer back to platform"`
+	DryRun      bool   `help:"skip publishing"`
+	TriggerType string `default:"command" help:"trigger type"`
+	EventName   string `help:"event name"`
+}
+
+type cli struct {
+	Daemon daemonCommand `cmd:"" help:"run webhook server"`
+	Review reviewCommand `cmd:"" help:"run one-shot review"`
+	Ask    askCommand    `cmd:"" help:"ask a question about a pull request"`
+}
+
+func main() {
 	if err := loadDotEnv(".env"); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -81,54 +96,199 @@ func main() {
 	defer func() { _ = closeLogger() }()
 	slog.SetDefault(logger)
 
+	parsed, command, err := parseCLI(os.Args[1:])
+	if err != nil {
+		exitErr(logger, err)
+	}
+
 	multiAdapter := platformadapter.MultiAdapter{Gitea: gitea.Adapter{}, GitHub: githubplatform.Adapter{}}
 	publisher := publish.Publisher{Platform: multiAdapter}
 
-	if daemon {
-		loaded, err := loader.New(configRoot)
-		if err != nil {
-			exitErr(logger, err)
-		}
-		if instance == "" {
-			exitErr(logger, fmt.Errorf("--instance is required in daemon mode"))
-		}
-		platformName, err := loaded.PlatformForInstance(instance)
-		if err != nil {
-			exitErr(logger, err)
-		}
-		if platformName != "gitea" {
-			exitErr(logger, fmt.Errorf("daemon mode currently supports only gitea instances"))
-		}
-		reviewer := review.Service{
-			Loader:    loaded,
-			Platform:  multiAdapter,
-			Workspace: workspace.Manager{CacheRoot: "./.cache/repos", WorkRoot: "./.worktrees", Logger: logger},
-			Executor:  executor.Runner{Executor: innerexec.Executor{}, TempDir: os.TempDir()},
-			Progress:  progressLogger(logger),
-		}
-		logger.Info("starting daemon", slog.String("listen", listen), slog.String("instance", instance))
-		handler := server.Handler{InstanceKey: instance, Adapter: gitea.Adapter{}, Loader: loaded, Reviewer: reviewer, Publisher: publisher}
-		exitErr(logger, http.ListenAndServe(listen, handler))
+	switch command {
+	case "daemon":
+		exitErr(logger, runDaemon(logger, multiAdapter, publisher, parsed.Daemon))
+	case "review":
+		exitErr(logger, runReview(logger, multiAdapter, publisher, parsed.Review))
+	case "ask":
+		exitErr(logger, runAsk(logger, multiAdapter, parsed.Ask))
+	default:
+		exitErr(logger, fmt.Errorf("unsupported command %q", command))
 	}
+}
 
+func parseCLI(args []string) (cli, string, error) {
+	parsed := cli{}
+	parser, err := kong.New(&parsed, kong.Name("review-bot"), kong.UsageOnError())
+	if err != nil {
+		return cli{}, "", err
+	}
+	ctx, err := parser.Parse(args)
+	if err != nil {
+		return cli{}, "", err
+	}
+	command := ctx.Command()
+	if strings.HasPrefix(command, "daemon") {
+		return parsed, "daemon", nil
+	}
+	if strings.HasPrefix(command, "review") {
+		return parsed, "review", nil
+	}
+	if strings.HasPrefix(command, "ask") {
+		return parsed, "ask", nil
+	}
+	return parsed, command, nil
+}
+
+func runDaemon(logger *slog.Logger, multiAdapter platformadapter.MultiAdapter, publisher publish.Publisher, cmd daemonCommand) error {
+	loaded, err := loader.New(cmd.Config)
+	if err != nil {
+		return err
+	}
+	platformName, err := loaded.PlatformForInstance(cmd.Instance)
+	if err != nil {
+		return err
+	}
+	if platformName != "gitea" {
+		return fmt.Errorf("daemon mode currently supports only gitea instances")
+	}
+	reviewer := review.Service{
+		Loader:    loaded,
+		Platform:  multiAdapter,
+		Workspace: workspace.Manager{CacheRoot: "./.cache/repos", WorkRoot: "./.worktrees", Logger: logger},
+		Executor:  executor.Runner{Executor: innerexec.Executor{}, TempDir: os.TempDir()},
+		Progress:  progressLogger(logger),
+	}
+	askReviewer := askservice.Service{
+		Loader:    loaded,
+		Platform:  multiAdapter,
+		Workspace: workspace.Manager{CacheRoot: "./.cache/repos", WorkRoot: "./.worktrees", Logger: logger},
+		Executor:  executor.Runner{Executor: innerexec.Executor{}, TempDir: os.TempDir()},
+		Progress:  progressLogger(logger),
+	}
+	logger.Info("starting daemon", slog.String("listen", cmd.Listen), slog.String("instance", cmd.Instance))
+	handler := server.Handler{InstanceKey: cmd.Instance, Adapter: gitea.Adapter{}, Loader: loaded, Reviewer: reviewer, Publisher: publisher, AskReviewer: askReviewer, CommentPublisher: multiAdapter}
+	return http.ListenAndServe(cmd.Listen, handler)
+}
+
+func runReview(logger *slog.Logger, multiAdapter platformadapter.MultiAdapter, publisher publish.Publisher, cmd reviewCommand) error {
+	oneShotLoader, req, err := buildReviewOneShotLoader(cmd)
+	if err != nil {
+		return err
+	}
+	reviewer := review.Service{
+		Loader:    oneShotLoader,
+		Platform:  multiAdapter,
+		Workspace: workspace.Manager{CacheRoot: "./.cache/repos", WorkRoot: "./.worktrees", Logger: logger},
+		Executor:  executor.Runner{Executor: innerexec.Executor{}, TempDir: os.TempDir()},
+		Progress:  progressLogger(logger),
+	}
+	result, err := reviewer.Execute(context.Background(), req)
+	if err != nil {
+		return err
+	}
+	effective, _, err := oneShotLoader.Load(req.InstanceKey, req.Owner, req.Repo, req.ProfileName)
+	if err != nil {
+		return err
+	}
+	if err := publisher.Publish(context.Background(), effective, req, result); err != nil {
+		return err
+	}
+	printResult(logger, result)
+	return nil
+}
+
+func runAsk(logger *slog.Logger, multiAdapter platformadapter.MultiAdapter, cmd askCommand) error {
+	oneShotLoader, req, err := buildAskOneShotLoader(cmd)
+	if err != nil {
+		return err
+	}
+	askReviewer := askservice.Service{
+		Loader:    oneShotLoader,
+		Platform:  multiAdapter,
+		Workspace: workspace.Manager{CacheRoot: "./.cache/repos", WorkRoot: "./.worktrees", Logger: logger},
+		Executor:  executor.Runner{Executor: innerexec.Executor{}, TempDir: os.TempDir()},
+		Progress:  progressLogger(logger),
+	}
+	result, err := askReviewer.Execute(context.Background(), req)
+	if err != nil {
+		return err
+	}
+	effective, _, err := oneShotLoader.Load(req.InstanceKey, req.Owner, req.Repo, req.ProfileName)
+	if err != nil {
+		return err
+	}
+	if req.Publish && !req.DryRun {
+		if err := multiAdapter.PublishComment(context.Background(), effective, req, formatAskComment("cli", req.QuestionText, result.Answer)); err != nil {
+			return err
+		}
+	}
+	printAskResult(logger, result)
+	return nil
+}
+
+func buildReviewOneShotLoader(cmd reviewCommand) (*loader.OneShotLoader, core.ReviewRequest, error) {
+	oneShotLoader, instance, baseURL, token, err := buildOneShotLoader(cmd.Config, cmd.ProfilesDir, cmd.Instance, cmd.Platform, cmd.BaseURL, cmd.Owner, cmd.Repo, cmd.Profile, cmd.Provider, cmd.Model, cmd.TimeoutSeconds, cmd.TokenEnv, cmd.Publish)
+	if err != nil {
+		return nil, core.ReviewRequest{}, err
+	}
+	req := core.ReviewRequest{
+		InstanceKey:  instance,
+		Owner:        cmd.Owner,
+		Repo:         cmd.Repo,
+		PRNumber:     cmd.PR,
+		HeadSHA:      cmd.HeadSHA,
+		DeliveryPath: "oneshot",
+		TriggerType:  cmd.TriggerType,
+		EventName:    cmd.EventName,
+		CommandText:  cmd.Command,
+		ProfileName:  cmd.Profile,
+		Publish:      cmd.Publish,
+		DryRun:       cmd.DryRun,
+	}
+	_ = baseURL
+	_ = token
+	return oneShotLoader, req, nil
+}
+
+func buildAskOneShotLoader(cmd askCommand) (*loader.OneShotLoader, core.ReviewRequest, error) {
+	oneShotLoader, instance, _, _, err := buildOneShotLoader(cmd.Config, cmd.ProfilesDir, cmd.Instance, cmd.Platform, cmd.BaseURL, cmd.Owner, cmd.Repo, cmd.Profile, cmd.Provider, cmd.Model, cmd.TimeoutSeconds, cmd.TokenEnv, cmd.Publish)
+	if err != nil {
+		return nil, core.ReviewRequest{}, err
+	}
+	req := core.ReviewRequest{
+		InstanceKey:  instance,
+		Owner:        cmd.Owner,
+		Repo:         cmd.Repo,
+		PRNumber:     cmd.PR,
+		HeadSHA:      cmd.HeadSHA,
+		DeliveryPath: "oneshot",
+		TriggerType:  cmd.TriggerType,
+		EventName:    cmd.EventName,
+		CommandText:  "/ask " + cmd.Question,
+		QuestionText: cmd.Question,
+		ProfileName:  cmd.Profile,
+		Publish:      cmd.Publish,
+		DryRun:       cmd.DryRun,
+	}
+	return oneShotLoader, req, nil
+}
+
+func buildOneShotLoader(configRoot, profilesDir, instance, platformName, baseURL, owner, repo, profile, provider, model string, timeoutSeconds int, tokenEnv string, publishFlag bool) (*loader.OneShotLoader, string, string, string, error) {
 	if profilesDir == "" {
 		profilesDir = configRoot + "/profiles"
 	}
 	if instance == "" {
 		instance = "oneshot"
 	}
-	if platformName == "" || owner == "" || repo == "" || pr == 0 || provider == "" || model == "" {
-		exitErr(logger, fmt.Errorf("--platform, --owner, --repo, --pr, --provider, and --model are required in oneshot mode"))
-	}
 	baseURL = resolveBaseURL(platformName, baseURL)
-	if platformName == "github" && !dryRun {
-		exitErr(logger, fmt.Errorf("github support is currently limited to oneshot dry-run mode"))
+	if platformName == "github" && publishFlag {
+		return nil, "", "", "", fmt.Errorf("github support is currently limited to oneshot dry-run mode")
 	}
 	token := ""
 	if tokenEnv != "" {
 		token = os.Getenv(tokenEnv)
 		if token == "" {
-			exitErr(logger, fmt.Errorf("environment variable %s is not set", tokenEnv))
+			return nil, "", "", "", fmt.Errorf("environment variable %s is not set", tokenEnv)
 		}
 	}
 	oneShotLoader, err := loader.NewOneShot(profilesDir, config.EffectiveRepositoryConfig{
@@ -138,10 +298,12 @@ func main() {
 		Platform:    platformName,
 		BaseURL:     baseURL,
 		Auth:        config.ResolvedAuth{Token: token},
-		Model:       config.ModelDefinition{Provider: provider, Model: model},
+		ReviewModel: config.ModelDefinition{Provider: provider, Model: model},
+		AskModel:    config.ModelDefinition{Provider: provider, Model: model},
 		Config: config.Config{
 			DefaultProfile:          defaultProfileName(profile),
 			EnabledProfiles:         []string{defaultProfileName(profile)},
+			OpencodeTimeoutSeconds:  timeoutSeconds,
 			PublishSummaryComment:   publishFlag,
 			PublishInlineComments:   publishFlag,
 			InlineCommentLimit:      5,
@@ -149,45 +311,10 @@ func main() {
 		},
 	})
 	if err != nil {
-		exitErr(logger, err)
+		return nil, "", "", "", err
 	}
-	reviewer := review.Service{
-		Loader:    oneShotLoader,
-		Platform:  multiAdapter,
-		Workspace: workspace.Manager{CacheRoot: "./.cache/repos", WorkRoot: "./.worktrees", Logger: logger},
-		Executor:  executor.Runner{Executor: innerexec.Executor{}, TempDir: os.TempDir()},
-		Progress:  progressLogger(logger),
-	}
-
-	req := core.ReviewRequest{
-		InstanceKey:  instance,
-		Owner:        owner,
-		Repo:         repo,
-		PRNumber:     pr,
-		HeadSHA:      headSHA,
-		DeliveryPath: "oneshot",
-		TriggerType:  triggerType,
-		EventName:    eventName,
-		CommandText:  command,
-		ProfileName:  profile,
-		Publish:      publishFlag,
-		DryRun:       dryRun,
-	}
-
-	result, err := reviewer.Execute(context.Background(), req)
-	if err != nil {
-		exitErr(logger, err)
-	}
-	effective, _, err := oneShotLoader.Load(instance, owner, repo, profile)
-	if err != nil {
-		exitErr(logger, err)
-	}
-	if err := publisher.Publish(context.Background(), effective, req, result); err != nil {
-		exitErr(logger, err)
-	}
-	printResult(logger, result)
+	return oneShotLoader, instance, baseURL, token, nil
 }
-
 
 func printResult(logger *slog.Logger, result core.ReviewResult) {
 	logger.Info("review finished",
@@ -207,6 +334,13 @@ func printResult(logger *slog.Logger, result core.ReviewResult) {
 	}
 	if len(result.Warnings) > 0 {
 		logger.Warn("review warnings", slog.Any("warnings", result.Warnings))
+	}
+}
+
+func printAskResult(logger *slog.Logger, result core.AskResult) {
+	logger.Info("ask finished", slog.String("answer", result.Answer))
+	if len(result.Warnings) > 0 {
+		logger.Warn("ask warnings", slog.Any("warnings", result.Warnings))
 	}
 }
 
@@ -288,4 +422,8 @@ func loadDotEnv(path string) error {
 		}
 	}
 	return scanner.Err()
+}
+
+func formatAskComment(user, question, answer string) string {
+	return fmt.Sprintf("@%s\n\n问题：\n%s\n\n回答：\n%s", user, question, answer)
 }

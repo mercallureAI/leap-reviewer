@@ -55,3 +55,38 @@ func TestPublishReviewDegradesMultilineFindingToStartLine(t *testing.T) {
 		t.Fatalf("comment body = %q, want line range marker", payload.Comments[0].Body)
 	}
 }
+
+func TestPublishCommentPostsIssueComment(t *testing.T) {
+	var path string
+	var payload struct {
+		Body string `json:"body"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		defer r.Body.Close()
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	adapter := Adapter{Client: server.Client()}
+	effective := config.EffectiveRepositoryConfig{
+		Owner:   "team",
+		Repo:    "repo",
+		BaseURL: server.URL,
+		Auth:    config.ResolvedAuth{Token: "token"},
+	}
+
+	if err := adapter.PublishComment(context.Background(), effective, core.ReviewRequest{PRNumber: 1}, "plain answer"); err != nil {
+		t.Fatalf("PublishComment() error = %v", err)
+	}
+	if got, want := path, "/api/v1/repos/team/repo/issues/1/comments"; got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+	if got, want := payload.Body, "plain answer"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
