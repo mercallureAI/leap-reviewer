@@ -1,4 +1,4 @@
-.cache/
-.worktrees/
-config/
-.env
+/.cache/
+/.worktrees/
+/config/
+/.env
