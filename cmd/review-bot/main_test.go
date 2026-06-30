@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/cryolitia/gitea-ai-bot/internal/config"
 	"github.com/cryolitia/gitea-ai-bot/internal/core"
 )
 
@@ -41,11 +42,77 @@ func TestParseCLIRecognizesAskCommand(t *testing.T) {
 	}
 }
 
+func TestParseCLIRecognizesAskIssueCommand(t *testing.T) {
+	cli, command, err := parseCLI([]string{"ask", "--platform", "gitea", "--owner", "team", "--repo", "repo", "--issue", "7", "--provider", "openai", "--model", "gpt-5.4", "--question", "what is this issue about"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if got, want := command, "ask"; got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+	if got, want := cli.Ask.Issue, 7; got != want {
+		t.Fatalf("issue = %d, want %d", got, want)
+	}
+}
+
+func TestParseCLIRecognizesSummarizeCommand(t *testing.T) {
+	cli, command, err := parseCLI([]string{"summarize", "--platform", "gitea", "--owner", "team", "--repo", "repo", "--pr", "42", "--provider", "openai", "--model", "gpt-5.4", "--timeout-seconds", "90"})
+	if err != nil {
+		t.Fatalf("parseCLI() error = %v", err)
+	}
+	if got, want := command, "summarize"; got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+	if got, want := cli.Summarize.TimeoutSeconds, 90; got != want {
+		t.Fatalf("timeout = %d, want %d", got, want)
+	}
+}
+
 func TestParseCLIMissingAskQuestionFails(t *testing.T) {
 	_, _, err := parseCLI([]string{"ask", "--platform", "gitea", "--owner", "team", "--repo", "repo", "--pr", "42", "--provider", "openai", "--model", "gpt-5.4"})
 	if err == nil {
 		t.Fatal("parseCLI() error = nil, want missing question error")
 	}
+}
+
+func TestBuildAskOneShotLoaderUsesIssueNumber(t *testing.T) {
+	root := t.TempDir()
+	profilesDir := filepath.Join(root, "profiles", "default")
+	if err := os.MkdirAll(profilesDir, 0o755); err != nil {
+		t.Fatalf("mkdir profiles: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "profile.yaml"), []byte("target: pull_request\nlanguage: zh-CN\ninline_enabled: true\ninline_limit: 10\n"), 0o644); err != nil {
+		t.Fatalf("write profile.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "prompt.md"), []byte("shared prompt"), 0o644); err != nil {
+		t.Fatalf("write prompt.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profilesDir, "ask.md"), []byte("ask prompt"), 0o644); err != nil {
+		t.Fatalf("write ask.md: %v", err)
+	}
+
+	_, req, err := buildAskOneShotLoader(askCommand{
+		Config:         root,
+		ProfilesDir:    filepath.Join(root, "profiles"),
+		Platform:       "gitea",
+		Owner:          "team",
+		Repo:           "repo",
+		Issue:          7,
+		Provider:       "openai",
+		Model:          "gpt-5.4",
+		Question:       "what is this issue about",
+		TimeoutSeconds: 90,
+	})
+	if err != nil {
+		t.Fatalf("buildAskOneShotLoader() error = %v", err)
+	}
+	if got, want := req.IssueNumber, 7; got != want {
+		t.Fatalf("IssueNumber = %d, want %d", got, want)
+	}
+	if got := req.PRNumber; got != 0 {
+		t.Fatalf("PRNumber = %d, want 0", got)
+	}
+	_ = config.EffectiveRepositoryConfig{}
 }
 
 func TestParseRepoSpec(t *testing.T) {

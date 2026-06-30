@@ -31,7 +31,7 @@ func TestServiceExecuteBuildsPromptAndParsesExecutorResult(t *testing.T) {
 				ReviewModel: config.ModelDefinition{Provider: "openai", Model: "gpt-4.1-mini"},
 				AskModel:    config.ModelDefinition{Provider: "openai", Model: "gpt-5.4"},
 			},
-			profile: profiles.Definition{Name: "default", Prompt: "check for bugs", InlineEnabled: true, InlineLimit: 5},
+			profile: profiles.Definition{Name: "default", Prompt: "shared", ReviewPrompt: "check for bugs", InlineEnabled: true, InlineLimit: 5},
 		},
 		Platform:  fakePlatform{context: PullRequestContext{Title: "Fix bug", Body: "desc", HeadSHA: "abc123", HeadRef: "feature", FilesChanged: []ChangedFile{{Path: "main.go", Patch: "@@ -1 +1 @@"}}}},
 		Workspace: &fakeWorkspace{path: "/tmp/workspace"},

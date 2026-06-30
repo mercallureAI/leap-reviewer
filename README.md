@@ -102,6 +102,9 @@ config/profiles/            用户可编辑的 profile 提示词
 config/profiles/default/
   profile.yaml
   prompt.md
+  review.md
+  ask.md
+  summarize.md
 ```
 
 ### `profile.yaml`
@@ -113,14 +116,19 @@ config/profiles/default/
 - `inline_enabled`
 - `inline_limit`
 
-### `prompt.md`
+### 提示词文件
 
-用于定义：
+- `prompt.md`
+  - 通用回退提示词
+  - 当 `review.md` / `ask.md` / `summarize.md` 缺失时使用
+- `review.md`
+  - `review` 能力专属提示词
+- `ask.md`
+  - `ask` 能力专属提示词
+- `summarize.md`
+  - `summarize` 能力专属提示词
 
-- 审阅角色
-- 关注点
-- 输出语言
-- `review_action` 判断标准
+推荐直接为不同能力分别维护独立文件，避免把审阅、问答和 PR 描述改写的要求混在一起。
 
 ## 环境变量
 
@@ -183,6 +191,7 @@ config/profiles/default/
 - `daemon`：启动 Gitea webhook 服务
 - `review`：对指定 PR 执行一次审阅
 - `ask`：对指定 PR 执行一次问答
+- `summarize`：重写指定 PR 的描述正文
 
 其中 `review` / `ask` 不依赖 `config.yaml`，只需要：
 
@@ -262,6 +271,41 @@ go run ./cmd/review-bot ask \
   --token-env GITEA_TOKEN_DEFAULT
 ```
 
+### Gitea ask issue 示例
+
+```bash
+go run ./cmd/review-bot ask \
+  --profiles-dir ./config/profiles \
+  --platform gitea \
+  --base-url http://gitea.example.com \
+  --owner team \
+  --repo service \
+  --issue 77 \
+  --provider openai \
+  --model gpt-5.4 \
+  --timeout-seconds 300 \
+  --question "这个 issue 在说什么？" \
+  --dry-run \
+  --token-env GITEA_TOKEN_DEFAULT
+```
+
+### Gitea summarize 示例
+
+```bash
+go run ./cmd/review-bot summarize \
+  --profiles-dir ./config/profiles \
+  --platform gitea \
+  --base-url http://gitea.example.com \
+  --owner team \
+  --repo service \
+  --pr 123 \
+  --provider openai \
+  --model gpt-5.4 \
+  --timeout-seconds 300 \
+  --dry-run \
+  --token-env GITEA_TOKEN_DEFAULT
+```
+
 说明：
 
 - GitHub 当前只允许 `dry-run`
@@ -290,11 +334,19 @@ go run ./cmd/review-bot daemon \
 - 自动事件
 - PR 评论命令 `/review`
 - PR 评论命令 `/ask`
+- PR 评论命令 `/summarize`
 
 `/ask` 支持两种格式：
 
 - `/ask <问题>`
 - `/ask <profile> <问题>`
+
+普通 issue comment 上的 `/ask` 会基于仓库默认分支的 HEAD 准备工作区，并结合 issue 标题/正文来回答问题。
+
+`/summarize` 支持两种格式：
+
+- `/summarize`
+- `/summarize <profile>`
 
 ## 平台差异
 

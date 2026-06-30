@@ -19,8 +19,21 @@ type MultiAdapter struct {
 
 type Adapter interface {
 	GetPullRequestContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error)
+	GetAskContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error)
 	PublishReview(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, core.ReviewResult) error
 	PublishComment(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error
+	UpdatePullRequestBody(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error
+}
+
+func (m MultiAdapter) GetAskContext(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest) (review.PullRequestContext, error) {
+	switch effective.Platform {
+	case "gitea":
+		return m.Gitea.GetAskContext(ctx, effective, req)
+	case "github":
+		return m.GitHub.GetAskContext(ctx, effective, req)
+	default:
+		return review.PullRequestContext{}, fmt.Errorf("unsupported platform %q", effective.Platform)
+	}
 }
 
 func (m MultiAdapter) GetPullRequestContext(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest) (review.PullRequestContext, error) {
@@ -49,6 +62,17 @@ func (m MultiAdapter) PublishComment(ctx context.Context, effective config.Effec
 	switch effective.Platform {
 	case "gitea":
 		return m.Gitea.PublishComment(ctx, effective, req, body)
+	case "github":
+		return ErrPublishUnsupported
+	default:
+		return fmt.Errorf("unsupported platform %q", effective.Platform)
+	}
+}
+
+func (m MultiAdapter) UpdatePullRequestBody(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest, body string) error {
+	switch effective.Platform {
+	case "gitea":
+		return m.Gitea.UpdatePullRequestBody(ctx, effective, req, body)
 	case "github":
 		return ErrPublishUnsupported
 	default:

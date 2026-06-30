@@ -52,6 +52,16 @@ func ParseCommand(body, defaultProfile string, enabledProfiles []string) (Comman
 			ProfileName: profile,
 			Question:    question,
 		}, true
+	case "/summarize":
+		profile := defaultProfile
+		if len(parts) > 1 {
+			profile = parts[1]
+		}
+		return Command{
+			Raw:         strings.Join(parts, " "),
+			CommandType: "summarize",
+			ProfileName: profile,
+		}, true
 	default:
 		return Command{}, false
 	}

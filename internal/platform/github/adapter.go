@@ -34,6 +34,23 @@ type fileResponse struct {
 	Patch    string `json:"patch"`
 }
 
+type issueResponse struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
+type repoResponse struct {
+	DefaultBranch string `json:"default_branch"`
+	CloneURL      string `json:"clone_url"`
+}
+
+type branchResponse struct {
+	Name   string `json:"name"`
+	Commit struct {
+		SHA string `json:"sha"`
+	} `json:"commit"`
+}
+
 func (a Adapter) GetPullRequestContext(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest) (review.PullRequestContext, error) {
 	prPath := fmt.Sprintf("/repos/%s/%s/pulls/%d", effective.Owner, effective.Repo, req.PRNumber)
 	filesPath := fmt.Sprintf("%s/files?per_page=100", prPath)
@@ -62,11 +79,37 @@ func (a Adapter) GetPullRequestContext(ctx context.Context, effective config.Eff
 	}, nil
 }
 
+func (a Adapter) GetAskContext(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest) (review.PullRequestContext, error) {
+	if req.IssueNumber > 0 && req.PRNumber == 0 {
+		issuePath := fmt.Sprintf("/repos/%s/%s/issues/%d", effective.Owner, effective.Repo, req.IssueNumber)
+		repoPath := fmt.Sprintf("/repos/%s/%s", effective.Owner, effective.Repo)
+		var issue issueResponse
+		if err := a.getJSON(ctx, effective, issuePath, &issue); err != nil {
+			return review.PullRequestContext{}, err
+		}
+		var repo repoResponse
+		if err := a.getJSON(ctx, effective, repoPath, &repo); err != nil {
+			return review.PullRequestContext{}, err
+		}
+		branchPath := fmt.Sprintf("/repos/%s/%s/branches/%s", effective.Owner, effective.Repo, repo.DefaultBranch)
+		var branch branchResponse
+		if err := a.getJSON(ctx, effective, branchPath, &branch); err != nil {
+			return review.PullRequestContext{}, err
+		}
+		return review.PullRequestContext{Title: issue.Title, Body: issue.Body, CloneURL: repo.CloneURL, HeadSHA: branch.Commit.SHA, HeadRef: branch.Name}, nil
+	}
+	return a.GetPullRequestContext(ctx, effective, req)
+}
+
 func (a Adapter) PublishReview(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, core.ReviewResult) error {
 	return nil
 }
 
 func (a Adapter) PublishComment(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error {
+	return nil
+}
+
+func (a Adapter) UpdatePullRequestBody(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error {
 	return nil
 }
 

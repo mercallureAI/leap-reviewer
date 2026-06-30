@@ -127,7 +127,7 @@ func buildPrompt(profile profiles.Definition, prContext PullRequestContext) stri
 	var b strings.Builder
 	b.WriteString(embeddedSystemPrompt())
 	b.WriteString("\n\n")
-	b.WriteString(profile.Prompt)
+	b.WriteString(profile.ReviewPrompt)
 	b.WriteString("\n\n")
 	b.WriteString(embeddedInstructionPrompt())
 	b.WriteString("\n")

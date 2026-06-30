@@ -6,6 +6,7 @@ type ReviewRequest struct {
 	Owner            string
 	Repo             string
 	PRNumber         int
+	IssueNumber      int
 	HeadSHA          string
 	DeliveryPath     string
 	TriggerType      string
@@ -51,4 +52,12 @@ type ReviewResult struct {
 type AskResult struct {
 	Answer   string   `json:"answer" yaml:"answer"`
 	Warnings []string `json:"warnings,omitempty" yaml:"warnings,omitempty"`
+}
+
+type SummarizeResult struct {
+	Body              string   `json:"body" yaml:"body"`
+	OriginalBody      string   `json:"-" yaml:"-"`
+	Warnings          []string `json:"warnings,omitempty" yaml:"warnings,omitempty"`
+	AlreadySummarized bool     `json:"already_summarized,omitempty" yaml:"already_summarized,omitempty"`
+	Source            string   `json:"source,omitempty" yaml:"source,omitempty"`
 }

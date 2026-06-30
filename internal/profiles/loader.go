@@ -16,7 +16,10 @@ type Definition struct {
 	Language      string `yaml:"language"`
 	InlineEnabled bool   `yaml:"inline_enabled"`
 	InlineLimit   int    `yaml:"inline_limit"`
-	Prompt        string
+	Prompt          string
+	ReviewPrompt    string
+	AskPrompt       string
+	SummarizePrompt string
 }
 
 func LoadAll(root string) (map[string]Definition, error) {
@@ -59,6 +62,18 @@ func loadOne(dir, name string) (Definition, error) {
 	if err != nil {
 		return Definition{}, err
 	}
+	reviewPromptBytes, err := readOptionalPrompt(filepath.Join(dir, "review.md"))
+	if err != nil {
+		return Definition{}, err
+	}
+	askPromptBytes, err := readOptionalPrompt(filepath.Join(dir, "ask.md"))
+	if err != nil {
+		return Definition{}, err
+	}
+	summarizePromptBytes, err := readOptionalPrompt(filepath.Join(dir, "summarize.md"))
+	if err != nil {
+		return Definition{}, err
+	}
 
 	var definition Definition
 	dec := yaml.NewDecoder(strings.NewReader(string(definitionBytes)))
@@ -69,5 +84,26 @@ func loadOne(dir, name string) (Definition, error) {
 
 	definition.Name = name
 	definition.Prompt = string(promptBytes)
+	definition.ReviewPrompt = choosePrompt(reviewPromptBytes, promptBytes)
+	definition.AskPrompt = choosePrompt(askPromptBytes, promptBytes)
+	definition.SummarizePrompt = choosePrompt(summarizePromptBytes, promptBytes)
 	return definition, nil
+}
+
+func readOptionalPrompt(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return data, nil
+}
+
+func choosePrompt(capability []byte, fallback []byte) string {
+	if len(capability) > 0 {
+		return string(capability)
+	}
+	return string(fallback)
 }

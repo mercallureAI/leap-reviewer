@@ -11,6 +11,7 @@ import (
 
 	"github.com/cryolitia/gitea-ai-bot/internal/config"
 	"github.com/cryolitia/gitea-ai-bot/internal/core"
+	"github.com/cryolitia/gitea-ai-bot/internal/review"
 )
 
 func TestPublishReviewDegradesMultilineFindingToStartLine(t *testing.T) {
@@ -89,4 +90,82 @@ func TestPublishCommentPostsIssueComment(t *testing.T) {
 	if got, want := payload.Body, "plain answer"; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
 	}
+}
+
+func TestUpdatePullRequestBodyPatchesPullRequest(t *testing.T) {
+	var method string
+	var path string
+	var payload struct {
+		Body string `json:"body"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		method = r.Method
+		path = r.URL.Path
+		defer r.Body.Close()
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("unmarshal payload: %v", err)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	adapter := Adapter{Client: server.Client()}
+	effective := config.EffectiveRepositoryConfig{Owner: "team", Repo: "repo", BaseURL: server.URL, Auth: config.ResolvedAuth{Token: "token"}}
+
+	if err := adapter.UpdatePullRequestBody(context.Background(), effective, core.ReviewRequest{PRNumber: 1}, "new body"); err != nil {
+		t.Fatalf("UpdatePullRequestBody() error = %v", err)
+	}
+	if got, want := method, http.MethodPatch; got != want {
+		t.Fatalf("method = %q, want %q", got, want)
+	}
+	if got, want := path, "/api/v1/repos/team/repo/pulls/1"; got != want {
+		t.Fatalf("path = %q, want %q", got, want)
+	}
+	if got, want := payload.Body, "new body"; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestGetAskContextForIssueUsesDefaultBranchHead(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/team/repo/issues/77":
+			_, _ = w.Write([]byte(`{"title":"Issue title","body":"Issue body"}`))
+		case "/api/v1/repos/team/repo":
+			_, _ = w.Write([]byte(`{"default_branch":"main","clone_url":"https://gitea.example.com/team/repo.git"}`))
+		case "/api/v1/repos/team/repo/branches/main":
+			_, _ = w.Write([]byte(`{"name":"main","commit":{"id":"abc123"}}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	adapter := Adapter{Client: server.Client()}
+	effective := config.EffectiveRepositoryConfig{Owner: "team", Repo: "repo", BaseURL: server.URL, Auth: config.ResolvedAuth{Token: "token"}}
+
+	ctx, err := adapter.GetAskContext(context.Background(), effective, core.ReviewRequest{IssueNumber: 77})
+	if err != nil {
+		t.Fatalf("GetAskContext() error = %v", err)
+	}
+	if got, want := ctx.Title, "Issue title"; got != want {
+		t.Fatalf("Title = %q, want %q", got, want)
+	}
+	if got, want := ctx.Body, "Issue body"; got != want {
+		t.Fatalf("Body = %q, want %q", got, want)
+	}
+	if got, want := ctx.CloneURL, "https://gitea.example.com/team/repo.git"; got != want {
+		t.Fatalf("CloneURL = %q, want %q", got, want)
+	}
+	if got, want := ctx.HeadRef, "main"; got != want {
+		t.Fatalf("HeadRef = %q, want %q", got, want)
+	}
+	if got, want := ctx.HeadSHA, "abc123"; got != want {
+		t.Fatalf("HeadSHA = %q, want %q", got, want)
+	}
+	if got, want := len(ctx.FilesChanged), 0; got != want {
+		t.Fatalf("FilesChanged len = %d, want %d", got, want)
+	}
+	_ = review.PullRequestContext{}
 }

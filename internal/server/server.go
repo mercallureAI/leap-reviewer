@@ -12,6 +12,7 @@ import (
 	"github.com/cryolitia/gitea-ai-bot/internal/core"
 	"github.com/cryolitia/gitea-ai-bot/internal/platform/gitea"
 	"github.com/cryolitia/gitea-ai-bot/internal/profiles"
+	summarizeservice "github.com/cryolitia/gitea-ai-bot/internal/summarize"
 	"github.com/cryolitia/gitea-ai-bot/internal/triggers"
 )
 
@@ -45,6 +46,12 @@ type Handler struct {
 	CommentPublisher interface {
 		PublishComment(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error
 	}
+	SummarizeReviewer interface {
+		Execute(context.Context, core.ReviewRequest) (core.SummarizeResult, error)
+	}
+	BodyUpdater interface {
+		UpdatePullRequestBody(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error
+	}
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -68,7 +75,7 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if !issueEvent.IsPull || issueEvent.Action != "created" {
+		if issueEvent.Action != "created" {
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
@@ -115,6 +122,24 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.TriggerType == "command" && !allowsCommand(effective.Config, commandName(req.CommandText)) {
+		w.WriteHeader(http.StatusAccepted)
+		return
+	}
+	if commandName(req.CommandText) == "summarize" {
+		result, err := h.SummarizeReviewer.Execute(r.Context(), req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if result.AlreadySummarized {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		body := summarizeservice.BuildPublishedBody(result.OriginalBody, req.TriggerUser, result.Body)
+		if err := h.BodyUpdater.UpdatePullRequestBody(r.Context(), effective, req, body); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -189,12 +214,21 @@ func ParseIssueCommentTrigger(payload []byte, defaultProfile string, enabledProf
 	if err := json.Unmarshal(payload, &event); err != nil {
 		return core.ReviewRequest{}, false, err
 	}
-	if !event.IsPull || event.Action != "created" {
+	if event.Action != "created" {
 		return core.ReviewRequest{}, false, nil
 	}
 	command, ok := triggers.ParseCommand(event.Comment.Body, defaultProfile, enabledProfiles)
 	if !ok {
 		return core.ReviewRequest{}, false, nil
+	}
+	if !event.IsPull && command.CommandType != "ask" {
+		return core.ReviewRequest{}, false, nil
+	}
+	prNumber := 0
+	issueNumber := event.Issue.Number
+	if event.IsPull {
+		prNumber = event.Issue.Number
+		issueNumber = 0
 	}
 	return core.ReviewRequest{
 		TriggerType:      "command",
@@ -203,7 +237,8 @@ func ParseIssueCommentTrigger(payload []byte, defaultProfile string, enabledProf
 		ProfileName:      command.ProfileName,
 		Owner:            event.Repository.Owner.UserName,
 		Repo:             event.Repository.Name,
-		PRNumber:         event.Issue.Number,
+		PRNumber:         prNumber,
+		IssueNumber:      issueNumber,
 		TriggerUser:      event.Sender.UserName,
 		TriggerCommentID: event.Comment.ID,
 		Publish:          true,

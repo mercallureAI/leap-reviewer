@@ -15,6 +15,8 @@ func TestParseCommand(t *testing.T) {
 		{name: "review explicit profile", body: "/review security", commandType: "review", profile: "security", commandText: "/review security"},
 		{name: "ask default profile", body: "/ask why this change", commandType: "ask", profile: "default", question: "why this change", commandText: "/ask why this change"},
 		{name: "ask explicit profile", body: "/ask security why this change", commandType: "ask", profile: "security", question: "why this change", commandText: "/ask security why this change"},
+		{name: "summarize default profile", body: "/summarize", commandType: "summarize", profile: "default", commandText: "/summarize"},
+		{name: "summarize explicit profile", body: "/summarize security", commandType: "summarize", profile: "security", commandText: "/summarize security"},
 	}
 
 	for _, tt := range tests {

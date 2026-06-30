@@ -23,6 +23,7 @@ import (
 	"github.com/cryolitia/gitea-ai-bot/internal/publish"
 	"github.com/cryolitia/gitea-ai-bot/internal/review"
 	"github.com/cryolitia/gitea-ai-bot/internal/server"
+	summarizeservice "github.com/cryolitia/gitea-ai-bot/internal/summarize"
 	"github.com/cryolitia/gitea-ai-bot/internal/workspace"
 )
 
@@ -62,7 +63,8 @@ type askCommand struct {
 	BaseURL     string `help:"platform API base URL for oneshot mode"`
 	Owner       string `required:"" help:"repository owner"`
 	Repo        string `required:"" help:"repository name"`
-	PR          int    `required:"" help:"pull request number"`
+	PR          int    `help:"pull request number"`
+	Issue       int    `help:"issue number"`
 	HeadSHA     string `help:"pull request head sha"`
 	Profile     string `help:"profile name"`
 	Provider    string `required:"" help:"opencode model provider for oneshot mode"`
@@ -76,10 +78,32 @@ type askCommand struct {
 	EventName   string `help:"event name"`
 }
 
+type summarizeCommand struct {
+	Config      string `default:"./config" help:"configuration root"`
+	ProfilesDir string `help:"profiles directory for oneshot mode"`
+	Instance    string `help:"instance key"`
+	Platform    string `required:"" help:"platform name for oneshot mode"`
+	BaseURL     string `help:"platform API base URL for oneshot mode"`
+	Owner       string `required:"" help:"repository owner"`
+	Repo        string `required:"" help:"repository name"`
+	PR          int    `required:"" help:"pull request number"`
+	HeadSHA     string `help:"pull request head sha"`
+	Profile     string `help:"profile name"`
+	Provider    string `required:"" help:"opencode model provider for oneshot mode"`
+	Model       string `required:"" help:"opencode model name for oneshot mode"`
+	TimeoutSeconds int `default:"300" help:"opencode timeout in seconds"`
+	TokenEnv    string `help:"environment variable holding platform token for oneshot mode"`
+	Publish     bool   `help:"update pull request body on platform"`
+	DryRun      bool   `help:"skip publishing"`
+	TriggerType string `default:"command" help:"trigger type"`
+	EventName   string `help:"event name"`
+}
+
 type cli struct {
 	Daemon daemonCommand `cmd:"" help:"run webhook server"`
 	Review reviewCommand `cmd:"" help:"run one-shot review"`
 	Ask    askCommand    `cmd:"" help:"ask a question about a pull request"`
+	Summarize summarizeCommand `cmd:"" help:"rewrite the pull request body"`
 }
 
 func main() {
@@ -111,6 +135,8 @@ func main() {
 		exitErr(logger, runReview(logger, multiAdapter, publisher, parsed.Review))
 	case "ask":
 		exitErr(logger, runAsk(logger, multiAdapter, parsed.Ask))
+	case "summarize":
+		exitErr(logger, runSummarize(logger, multiAdapter, parsed.Summarize))
 	default:
 		exitErr(logger, fmt.Errorf("unsupported command %q", command))
 	}
@@ -135,6 +161,9 @@ func parseCLI(args []string) (cli, string, error) {
 	}
 	if strings.HasPrefix(command, "ask") {
 		return parsed, "ask", nil
+	}
+	if strings.HasPrefix(command, "summarize") {
+		return parsed, "summarize", nil
 	}
 	return parsed, command, nil
 }
@@ -165,8 +194,15 @@ func runDaemon(logger *slog.Logger, multiAdapter platformadapter.MultiAdapter, p
 		Executor:  executor.Runner{Executor: innerexec.Executor{}, TempDir: os.TempDir()},
 		Progress:  progressLogger(logger),
 	}
+	summarizeReviewer := summarizeservice.Service{
+		Loader:    loaded,
+		Platform:  multiAdapter,
+		Workspace: workspace.Manager{CacheRoot: "./.cache/repos", WorkRoot: "./.worktrees", Logger: logger},
+		Executor:  executor.Runner{Executor: innerexec.Executor{}, TempDir: os.TempDir()},
+		Progress:  progressLogger(logger),
+	}
 	logger.Info("starting daemon", slog.String("listen", cmd.Listen), slog.String("instance", cmd.Instance))
-	handler := server.Handler{InstanceKey: cmd.Instance, Adapter: gitea.Adapter{}, Loader: loaded, Reviewer: reviewer, Publisher: publisher, AskReviewer: askReviewer, CommentPublisher: multiAdapter}
+	handler := server.Handler{InstanceKey: cmd.Instance, Adapter: gitea.Adapter{}, Loader: loaded, Reviewer: reviewer, Publisher: publisher, AskReviewer: askReviewer, CommentPublisher: multiAdapter, SummarizeReviewer: summarizeReviewer, BodyUpdater: multiAdapter}
 	return http.ListenAndServe(cmd.Listen, handler)
 }
 
@@ -226,6 +262,40 @@ func runAsk(logger *slog.Logger, multiAdapter platformadapter.MultiAdapter, cmd 
 	return nil
 }
 
+func runSummarize(logger *slog.Logger, multiAdapter platformadapter.MultiAdapter, cmd summarizeCommand) error {
+	oneShotLoader, req, err := buildSummarizeOneShotLoader(cmd)
+	if err != nil {
+		return err
+	}
+	rewriter := summarizeservice.Service{
+		Loader:    oneShotLoader,
+		Platform:  multiAdapter,
+		Workspace: workspace.Manager{CacheRoot: "./.cache/repos", WorkRoot: "./.worktrees", Logger: logger},
+		Executor:  executor.Runner{Executor: innerexec.Executor{}, TempDir: os.TempDir()},
+		Progress:  progressLogger(logger),
+	}
+	result, err := rewriter.Execute(context.Background(), req)
+	if err != nil {
+		return err
+	}
+	if result.AlreadySummarized {
+		logger.Info("summarize skipped", slog.String("source", result.Source), slog.String("message", fmt.Sprintf("pull request already summarized by %s", result.Source)))
+		return nil
+	}
+	effective, _, err := oneShotLoader.Load(req.InstanceKey, req.Owner, req.Repo, req.ProfileName)
+	if err != nil {
+		return err
+	}
+	if req.Publish && !req.DryRun {
+		body := summarizeservice.BuildPublishedBody(result.OriginalBody, "cli", result.Body)
+		if err := multiAdapter.UpdatePullRequestBody(context.Background(), effective, req, body); err != nil {
+			return err
+		}
+	}
+	printSummarizeResult(logger, result)
+	return nil
+}
+
 func buildReviewOneShotLoader(cmd reviewCommand) (*loader.OneShotLoader, core.ReviewRequest, error) {
 	oneShotLoader, instance, baseURL, token, err := buildOneShotLoader(cmd.Config, cmd.ProfilesDir, cmd.Instance, cmd.Platform, cmd.BaseURL, cmd.Owner, cmd.Repo, cmd.Profile, cmd.Provider, cmd.Model, cmd.TimeoutSeconds, cmd.TokenEnv, cmd.Publish)
 	if err != nil {
@@ -260,12 +330,38 @@ func buildAskOneShotLoader(cmd askCommand) (*loader.OneShotLoader, core.ReviewRe
 		Owner:        cmd.Owner,
 		Repo:         cmd.Repo,
 		PRNumber:     cmd.PR,
+		IssueNumber:  cmd.Issue,
 		HeadSHA:      cmd.HeadSHA,
 		DeliveryPath: "oneshot",
 		TriggerType:  cmd.TriggerType,
 		EventName:    cmd.EventName,
 		CommandText:  "/ask " + cmd.Question,
 		QuestionText: cmd.Question,
+		ProfileName:  cmd.Profile,
+		Publish:      cmd.Publish,
+		DryRun:       cmd.DryRun,
+	}
+	if (req.PRNumber == 0 && req.IssueNumber == 0) || (req.PRNumber != 0 && req.IssueNumber != 0) {
+		return nil, core.ReviewRequest{}, fmt.Errorf("exactly one of --pr or --issue is required for ask")
+	}
+	return oneShotLoader, req, nil
+}
+
+func buildSummarizeOneShotLoader(cmd summarizeCommand) (*loader.OneShotLoader, core.ReviewRequest, error) {
+	oneShotLoader, instance, _, _, err := buildOneShotLoader(cmd.Config, cmd.ProfilesDir, cmd.Instance, cmd.Platform, cmd.BaseURL, cmd.Owner, cmd.Repo, cmd.Profile, cmd.Provider, cmd.Model, cmd.TimeoutSeconds, cmd.TokenEnv, cmd.Publish)
+	if err != nil {
+		return nil, core.ReviewRequest{}, err
+	}
+	req := core.ReviewRequest{
+		InstanceKey:  instance,
+		Owner:        cmd.Owner,
+		Repo:         cmd.Repo,
+		PRNumber:     cmd.PR,
+		HeadSHA:      cmd.HeadSHA,
+		DeliveryPath: "oneshot",
+		TriggerType:  cmd.TriggerType,
+		EventName:    cmd.EventName,
+		CommandText:  "/summarize",
 		ProfileName:  cmd.Profile,
 		Publish:      cmd.Publish,
 		DryRun:       cmd.DryRun,
@@ -341,6 +437,13 @@ func printAskResult(logger *slog.Logger, result core.AskResult) {
 	logger.Info("ask finished", slog.String("answer", result.Answer))
 	if len(result.Warnings) > 0 {
 		logger.Warn("ask warnings", slog.Any("warnings", result.Warnings))
+	}
+}
+
+func printSummarizeResult(logger *slog.Logger, result core.SummarizeResult) {
+	logger.Info("summarize finished", slog.String("body", result.Body))
+	if len(result.Warnings) > 0 {
+		logger.Warn("summarize warnings", slog.Any("warnings", result.Warnings))
 	}
 }
 

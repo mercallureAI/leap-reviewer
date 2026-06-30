@@ -94,6 +94,51 @@ func TestHandlerPublishesAskCommentWhenAllowed(t *testing.T) {
 	}
 }
 
+func TestHandlerPublishesAskCommentForIssueWhenAllowed(t *testing.T) {
+	body := []byte(`{
+		"action": "created",
+		"is_pull": false,
+		"comment": {"body": "/ask what does this issue mean", "id": 12},
+		"repository": {"owner": {"username": "team"}, "name": "repo"},
+		"issue": {"number": 77},
+		"sender": {"username": "alice"}
+	}`)
+	loader := fakeLoader{cfg: config.EffectiveRepositoryConfig{
+		Owner:    "team",
+		Repo:     "repo",
+		Platform: "gitea",
+		Auth:     config.ResolvedAuth{WebhookSecret: "secret"},
+		Config: config.Config{
+			DefaultProfile:       "default",
+			EnabledProfiles:      []string{"default"},
+			CommandReviewEnabled: true,
+			AllowedCommands:      []string{"ask"},
+		},
+	}, profile: profiles.Definition{Name: "default"}}
+	askReviewer := &fakeAskReviewer{result: core.AskResult{Answer: "这是一个关于打包问题的 issue。"}}
+	commentPublisher := &fakeCommentPublisher{}
+	handler := Handler{InstanceKey: "corp-gitea", Loader: loader, AskReviewer: askReviewer, CommentPublisher: commentPublisher}
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("X-Gitea-Event", "issue_comment")
+	req.Header.Set("X-Gitea-Signature", signature("secret", body))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusAccepted)
+	}
+	if got, want := askReviewer.last.IssueNumber, 77; got != want {
+		t.Fatalf("IssueNumber = %d, want %d", got, want)
+	}
+	if got := askReviewer.last.PRNumber; got != 0 {
+		t.Fatalf("PRNumber = %d, want 0", got)
+	}
+	if !strings.Contains(commentPublisher.body, "回答：\n这是一个关于打包问题的 issue。") {
+		t.Fatalf("comment body = %q, want answer block", commentPublisher.body)
+	}
+}
+
 func TestHandlerIgnoresAskWhenCommandNotAllowed(t *testing.T) {
 	body := []byte(`{
 		"action": "created",
@@ -127,6 +172,69 @@ func TestHandlerIgnoresAskWhenCommandNotAllowed(t *testing.T) {
 	}
 }
 
+func TestHandlerUpdatesPullRequestBodyForSummarizeWhenAllowed(t *testing.T) {
+	body := []byte(`{
+		"action": "created",
+		"is_pull": true,
+		"comment": {"body": "/summarize", "id": 12},
+		"repository": {"owner": {"username": "team"}, "name": "repo"},
+		"issue": {"number": 42},
+		"sender": {"username": "alice"}
+	}`)
+	loader := fakeLoader{cfg: config.EffectiveRepositoryConfig{
+		Owner: "team", Repo: "repo", Platform: "gitea", Auth: config.ResolvedAuth{WebhookSecret: "secret"},
+		Config: config.Config{DefaultProfile: "default", EnabledProfiles: []string{"default"}, CommandReviewEnabled: true, AllowedCommands: []string{"review", "ask", "summarize"}},
+	}, profile: profiles.Definition{Name: "default"}}
+	summarizeReviewer := &fakeSummarizeReviewer{result: core.SummarizeResult{Body: "new body", OriginalBody: "original body"}}
+	bodyUpdater := &fakeBodyUpdater{}
+	handler := Handler{InstanceKey: "corp-gitea", Loader: loader, SummarizeReviewer: summarizeReviewer, BodyUpdater: bodyUpdater}
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("X-Gitea-Event", "issue_comment")
+	req.Header.Set("X-Gitea-Signature", signature("secret", body))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusAccepted)
+	}
+	want := "original body\n\n---\n\n<!-- review-bot:summarized source=alice -->\n\nnew body"
+	if got := bodyUpdater.body; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestHandlerSkipsSummarizeWhenAlreadySummarized(t *testing.T) {
+	body := []byte(`{
+		"action": "created",
+		"is_pull": true,
+		"comment": {"body": "/summarize", "id": 12},
+		"repository": {"owner": {"username": "team"}, "name": "repo"},
+		"issue": {"number": 42},
+		"sender": {"username": "alice"}
+	}`)
+	loader := fakeLoader{cfg: config.EffectiveRepositoryConfig{
+		Owner: "team", Repo: "repo", Platform: "gitea", Auth: config.ResolvedAuth{WebhookSecret: "secret"},
+		Config: config.Config{DefaultProfile: "default", EnabledProfiles: []string{"default"}, CommandReviewEnabled: true, AllowedCommands: []string{"summarize"}},
+	}, profile: profiles.Definition{Name: "default"}}
+	summarizeReviewer := &fakeSummarizeReviewer{result: core.SummarizeResult{AlreadySummarized: true, Source: "alice", OriginalBody: "original body"}}
+	bodyUpdater := &fakeBodyUpdater{}
+	handler := Handler{InstanceKey: "corp-gitea", Loader: loader, SummarizeReviewer: summarizeReviewer, BodyUpdater: bodyUpdater}
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("X-Gitea-Event", "issue_comment")
+	req.Header.Set("X-Gitea-Signature", signature("secret", body))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusAccepted)
+	}
+	if got := bodyUpdater.body; got != "" {
+		t.Fatalf("body updater should not run, got %q", got)
+	}
+}
+
 type fakeLoader struct {
 	cfg     config.EffectiveRepositoryConfig
 	profile profiles.Definition
@@ -151,6 +259,21 @@ type fakeCommentPublisher struct {
 }
 
 func (f *fakeCommentPublisher) PublishComment(_ context.Context, _ config.EffectiveRepositoryConfig, _ core.ReviewRequest, body string) error {
+	f.body = body
+	return nil
+}
+
+type fakeSummarizeReviewer struct {
+	result core.SummarizeResult
+}
+
+func (f *fakeSummarizeReviewer) Execute(_ context.Context, _ core.ReviewRequest) (core.SummarizeResult, error) {
+	return f.result, nil
+}
+
+type fakeBodyUpdater struct{ body string }
+
+func (f *fakeBodyUpdater) UpdatePullRequestBody(_ context.Context, _ config.EffectiveRepositoryConfig, _ core.ReviewRequest, body string) error {
 	f.body = body
 	return nil
 }

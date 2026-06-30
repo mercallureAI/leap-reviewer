@@ -18,7 +18,7 @@ type ConfigProfileLoader interface {
 }
 
 type Platform interface {
-	GetPullRequestContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error)
+	GetAskContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error)
 }
 
 type WorkspacePreparer interface {
@@ -44,8 +44,8 @@ func (s Service) Execute(ctx context.Context, req core.ReviewRequest) (core.AskR
 		return core.AskResult{}, err
 	}
 
-	s.progress("fetching pull request context")
-	prContext, err := s.Platform.GetPullRequestContext(ctx, effective, req)
+	s.progress("fetching ask context")
+	prContext, err := s.Platform.GetAskContext(ctx, effective, req)
 	if err != nil {
 		return core.AskResult{}, err
 	}
@@ -95,7 +95,7 @@ func buildPrompt(profile profiles.Definition, prContext review.PullRequestContex
 	var b strings.Builder
 	b.WriteString(embeddedSystemPrompt())
 	b.WriteString("\n\n")
-	b.WriteString(profile.Prompt)
+	b.WriteString(profile.AskPrompt)
 	b.WriteString("\n\n")
 	b.WriteString(embeddedInstructionPrompt())
 	b.WriteString("\n")

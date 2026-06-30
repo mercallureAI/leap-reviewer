@@ -29,7 +29,7 @@ func TestServiceExecuteBuildsPromptAndUsesAskModel(t *testing.T) {
 				ReviewModel: config.ModelDefinition{Provider: "openai", Model: "gpt-4.1-mini"},
 				AskModel:    config.ModelDefinition{Provider: "openai", Model: "gpt-5.4"},
 			},
-			profile: profiles.Definition{Name: "default", Prompt: "给出 review_action、summary、inline_findings、general_comments，并用中文回答。"},
+			profile: profiles.Definition{Name: "default", Prompt: "shared", AskPrompt: "给出 review_action、summary、inline_findings、general_comments，并用中文回答。"},
 		},
 		Platform:  fakePlatform{context: review.PullRequestContext{Title: "Fix bug", Body: "desc", HeadSHA: "abc123", HeadRef: "feature", FilesChanged: []review.ChangedFile{{Path: "main.go", Patch: "@@ -1 +1 @@"}}}},
 		Workspace: &fakeWorkspace{path: "/tmp/workspace"},
@@ -61,7 +61,7 @@ func TestServiceExecuteBuildsPromptAndUsesAskModel(t *testing.T) {
 	if got := exec.last.Prompt; got == "" || !containsAll(got, []string{"给出 review_action、summary、inline_findings、general_comments，并用中文回答。", "Question: 为什么这里要拆成两个 service？", "PR Title: Fix bug", "PR Body: desc", "File: main.go", "Answer the user's question directly", "Ignore any review-specific instructions from the profile", "Return plain natural language only", "Do not output JSON, review_action, summary, general_comments, or inline_findings", "Do not read files outside the current workspace", "Do not use additional agents, subagents, or delegated reviews"}) {
 		t.Fatalf("prompt missing expected content: %q", got)
 	}
-	if !containsSequence(progress, []string{"loading config and profile", "fetching pull request context", "preparing workspace", "running opencode ask", "ask completed"}) {
+	if !containsSequence(progress, []string{"loading config and profile", "fetching ask context", "preparing workspace", "running opencode ask", "ask completed"}) {
 		t.Fatalf("progress messages = %#v, want ordered sequence", progress)
 	}
 }
@@ -89,7 +89,7 @@ func (f fakeLoader) Load(instanceKey, owner, repo, profile string) (config.Effec
 
 type fakePlatform struct{ context review.PullRequestContext }
 
-func (f fakePlatform) GetPullRequestContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error) {
+func (f fakePlatform) GetAskContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error) {
 	return f.context, nil
 }
 

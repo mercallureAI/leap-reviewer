@@ -54,6 +54,25 @@ func TestMultiAdapterRejectsGitHubCommentPublish(t *testing.T) {
 	}
 }
 
+func TestMultiAdapterRoutesPullRequestBodyUpdateByPlatform(t *testing.T) {
+	gitea := fakeAdapter{}
+	m := MultiAdapter{Gitea: gitea}
+	if err := m.UpdatePullRequestBody(context.Background(), config.EffectiveRepositoryConfig{Platform: "gitea"}, core.ReviewRequest{}, "body"); err != nil {
+		t.Fatalf("UpdatePullRequestBody() error = %v", err)
+	}
+}
+
+func TestMultiAdapterRejectsGitHubPullRequestBodyUpdate(t *testing.T) {
+	m := MultiAdapter{GitHub: fakeAdapter{}}
+	err := m.UpdatePullRequestBody(context.Background(), config.EffectiveRepositoryConfig{Platform: "github"}, core.ReviewRequest{}, "body")
+	if err == nil {
+		t.Fatal("UpdatePullRequestBody() error = nil, want unsupported error")
+	}
+	if !errors.Is(err, ErrPublishUnsupported) {
+		t.Fatalf("UpdatePullRequestBody() error = %v, want ErrPublishUnsupported", err)
+	}
+}
+
 type fakeAdapter struct {
 	ctx review.PullRequestContext
 	err error
@@ -63,10 +82,18 @@ func (f fakeAdapter) GetPullRequestContext(context.Context, config.EffectiveRepo
 	return f.ctx, f.err
 }
 
+func (f fakeAdapter) GetAskContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error) {
+	return f.ctx, f.err
+}
+
 func (f fakeAdapter) PublishReview(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, core.ReviewResult) error {
 	return f.err
 }
 
 func (f fakeAdapter) PublishComment(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error {
+	return f.err
+}
+
+func (f fakeAdapter) UpdatePullRequestBody(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error {
 	return f.err
 }
