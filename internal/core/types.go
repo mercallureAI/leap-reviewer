@@ -57,7 +57,15 @@ type AskResult struct {
 type SummarizeResult struct {
 	Body              string   `json:"body" yaml:"body"`
 	OriginalBody      string   `json:"-" yaml:"-"`
+	OriginalAuthor    string   `json:"-" yaml:"-"`
 	Warnings          []string `json:"warnings,omitempty" yaml:"warnings,omitempty"`
 	AlreadySummarized bool     `json:"already_summarized,omitempty" yaml:"already_summarized,omitempty"`
 	Source            string   `json:"source,omitempty" yaml:"source,omitempty"`
+}
+
+type RepositoryPermission struct {
+	Pull  bool
+	Push  bool
+	Admin bool
+	Role  string
 }

@@ -24,6 +24,9 @@ type Adapter struct {
 type pullRequestResponse struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
+	User  struct {
+		Login string `json:"login"`
+	} `json:"user"`
 	Head  struct {
 		SHA  string `json:"sha"`
 		Ref  string `json:"ref"`
@@ -53,6 +56,11 @@ type branchResponse struct {
 	Commit struct {
 		ID string `json:"id"`
 	} `json:"commit"`
+}
+
+type collaboratorPermissionResponse struct {
+	Permission json.RawMessage `json:"permission"`
+	Role       string          `json:"role_name"`
 }
 
 type createReviewComment struct {
@@ -94,6 +102,7 @@ func (a Adapter) GetPullRequestContext(ctx context.Context, effective config.Eff
 	return review.PullRequestContext{
 		Title:        pr.Title,
 		Body:         pr.Body,
+		Author:       pr.User.Login,
 		CloneURL:     pr.Head.Repo.CloneURL,
 		HeadSHA:      pr.Head.SHA,
 		HeadRef:      pr.Head.Ref,
@@ -121,6 +130,55 @@ func (a Adapter) GetAskContext(ctx context.Context, effective config.EffectiveRe
 		return review.PullRequestContext{Title: issue.Title, Body: issue.Body, CloneURL: repo.CloneURL, HeadSHA: branch.Commit.ID, HeadRef: branch.Name}, nil
 	}
 	return a.GetPullRequestContext(ctx, effective, req)
+}
+
+func (a Adapter) GetRepositoryPermission(ctx context.Context, effective config.EffectiveRepositoryConfig, username string) (core.RepositoryPermission, error) {
+	endpoints := []string{
+		fmt.Sprintf("/api/v1/repos/%s/%s/collaborators/%s/permission", effective.Owner, effective.Repo, username),
+		fmt.Sprintf("/api/v1/repos/%s/%s/collaborators/%s/permissions", effective.Owner, effective.Repo, username),
+	}
+	var lastErr error
+	for _, endpoint := range endpoints {
+		var resp collaboratorPermissionResponse
+		err := a.getJSON(ctx, effective, endpoint, &resp)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return parseRepositoryPermission(resp)
+	}
+	if lastErr != nil {
+		return core.RepositoryPermission{}, lastErr
+	}
+	return core.RepositoryPermission{}, fmt.Errorf("permission lookup failed for %s", username)
+}
+
+func parseRepositoryPermission(resp collaboratorPermissionResponse) (core.RepositoryPermission, error) {
+	var asString string
+	if err := json.Unmarshal(resp.Permission, &asString); err == nil {
+		permission := core.RepositoryPermission{Role: resp.Role}
+		switch asString {
+		case "admin":
+			permission.Admin = true
+			permission.Push = true
+			permission.Pull = true
+		case "write":
+			permission.Push = true
+			permission.Pull = true
+		case "read":
+			permission.Pull = true
+		}
+		return permission, nil
+	}
+	var asObject struct {
+		Admin bool `json:"admin"`
+		Push  bool `json:"push"`
+		Pull  bool `json:"pull"`
+	}
+	if err := json.Unmarshal(resp.Permission, &asObject); err != nil {
+		return core.RepositoryPermission{}, err
+	}
+	return core.RepositoryPermission{Admin: asObject.Admin, Push: asObject.Push, Pull: asObject.Pull, Role: resp.Role}, nil
 }
 
 func (a Adapter) PublishReview(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest, result core.ReviewResult) error {

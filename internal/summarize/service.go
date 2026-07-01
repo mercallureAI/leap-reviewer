@@ -52,7 +52,7 @@ func (s Service) Execute(ctx context.Context, req core.ReviewRequest) (core.Summ
 	}
 	if source, ok := detectSummarySource(prContext.Body); ok {
 		s.progress("summarize completed")
-		return core.SummarizeResult{AlreadySummarized: true, Source: source, OriginalBody: prContext.Body}, nil
+		return core.SummarizeResult{AlreadySummarized: true, Source: source, OriginalBody: prContext.Body, OriginalAuthor: prContext.Author}, nil
 	}
 
 	headSHA := req.HeadSHA
@@ -87,7 +87,7 @@ func (s Service) Execute(ctx context.Context, req core.ReviewRequest) (core.Summ
 	}
 
 	s.progress("summarize completed")
-	return core.SummarizeResult{Body: normalizeBody(body), OriginalBody: prContext.Body}, nil
+	return core.SummarizeResult{Body: normalizeBody(body), OriginalBody: prContext.Body, OriginalAuthor: prContext.Author}, nil
 }
 
 func (s Service) progress(message string) {

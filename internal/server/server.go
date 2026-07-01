@@ -52,6 +52,9 @@ type Handler struct {
 	BodyUpdater interface {
 		UpdatePullRequestBody(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error
 	}
+	PermissionChecker interface {
+		GetRepositoryPermission(context.Context, config.EffectiveRepositoryConfig, string) (core.RepositoryPermission, error)
+	}
 }
 
 func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +135,17 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if result.AlreadySummarized {
+			if h.CommentPublisher != nil {
+				_ = h.CommentPublisher.PublishComment(r.Context(), effective, req, formatSummarizeAlreadySummarized(req.TriggerUser, result.Source))
+			}
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		if !canUpdatePullRequestBody(req.TriggerUser, result.OriginalAuthor, r.Context(), effective, h.PermissionChecker) {
+			if err := h.CommentPublisher.PublishComment(r.Context(), effective, req, formatSummarizePermissionDenied(req.TriggerUser, result.Body)); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
 			w.WriteHeader(http.StatusAccepted)
 			return
 		}
@@ -167,6 +181,30 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+func canUpdatePullRequestBody(triggerUser, originalAuthor string, ctx context.Context, effective config.EffectiveRepositoryConfig, checker interface {
+	GetRepositoryPermission(context.Context, config.EffectiveRepositoryConfig, string) (core.RepositoryPermission, error)
+}) bool {
+	if triggerUser != "" && triggerUser == originalAuthor {
+		return true
+	}
+	if checker == nil {
+		return false
+	}
+	permission, err := checker.GetRepositoryPermission(ctx, effective, triggerUser)
+	if err != nil {
+		return false
+	}
+	return permission.Admin || permission.Push
+}
+
+func formatSummarizePermissionDenied(user, body string) string {
+	return fmt.Sprintf("@%s 你当前没有修改这个 PR 描述的权限，下面是可手动采用的建议正文。\n\n---\n\n%s", user, body)
+}
+
+func formatSummarizeAlreadySummarized(user, source string) string {
+	return fmt.Sprintf("@%s 这个 PR 已经由 %s 总结过了。", user, source)
 }
 
 type webhookIssueComment struct {

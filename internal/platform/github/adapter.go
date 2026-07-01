@@ -20,6 +20,9 @@ type Adapter struct {
 type pullRequestResponse struct {
 	Title string `json:"title"`
 	Body  string `json:"body"`
+	User  struct {
+		Login string `json:"login"`
+	} `json:"user"`
 	Head  struct {
 		SHA  string `json:"sha"`
 		Ref  string `json:"ref"`
@@ -72,11 +75,16 @@ func (a Adapter) GetPullRequestContext(ctx context.Context, effective config.Eff
 	return review.PullRequestContext{
 		Title:        pr.Title,
 		Body:         pr.Body,
+		Author:       pr.User.Login,
 		CloneURL:     pr.Head.Repo.CloneURL,
 		HeadSHA:      pr.Head.SHA,
 		HeadRef:      pr.Head.Ref,
 		FilesChanged: changed,
 	}, nil
+}
+
+func (a Adapter) GetRepositoryPermission(context.Context, config.EffectiveRepositoryConfig, string) (core.RepositoryPermission, error) {
+	return core.RepositoryPermission{}, nil
 }
 
 func (a Adapter) GetAskContext(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest) (review.PullRequestContext, error) {

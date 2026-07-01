@@ -169,3 +169,48 @@ func TestGetAskContextForIssueUsesDefaultBranchHead(t *testing.T) {
 	}
 	_ = review.PullRequestContext{}
 }
+
+func TestGetRepositoryPermissionParsesWriteAccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.Path, "/api/v1/repos/team/repo/collaborators/alice/permission"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		_, _ = w.Write([]byte(`{"permission":"write","role_name":"contributor","user":{"login":"alice"}}`))
+	}))
+	defer server.Close()
+
+	adapter := Adapter{Client: server.Client()}
+	effective := config.EffectiveRepositoryConfig{Owner: "team", Repo: "repo", BaseURL: server.URL, Auth: config.ResolvedAuth{Token: "token"}}
+
+	permission, err := adapter.GetRepositoryPermission(context.Background(), effective, "alice")
+	if err != nil {
+		t.Fatalf("GetRepositoryPermission() error = %v", err)
+	}
+	if !permission.Push {
+		t.Fatal("Push = false, want true")
+	}
+	if permission.Admin {
+		t.Fatal("Admin = true, want false")
+	}
+	if got, want := permission.Role, "contributor"; got != want {
+		t.Fatalf("Role = %q, want %q", got, want)
+	}
+}
+
+func TestGetRepositoryPermissionParsesObjectAccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"permission":{"admin":false,"pull":true,"push":true},"role_name":"write","user":{"login":"alice"}}`))
+	}))
+	defer server.Close()
+
+	adapter := Adapter{Client: server.Client()}
+	effective := config.EffectiveRepositoryConfig{Owner: "team", Repo: "repo", BaseURL: server.URL, Auth: config.ResolvedAuth{Token: "token"}}
+
+	permission, err := adapter.GetRepositoryPermission(context.Background(), effective, "alice")
+	if err != nil {
+		t.Fatalf("GetRepositoryPermission() error = %v", err)
+	}
+	if !permission.Push || !permission.Pull {
+		t.Fatalf("permission = %#v, want push and pull true", permission)
+	}
+}

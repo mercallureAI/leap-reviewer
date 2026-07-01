@@ -18,6 +18,7 @@ type ChangedFile struct {
 type PullRequestContext struct {
 	Title        string
 	Body         string
+	Author       string
 	CloneURL     string
 	HeadSHA      string
 	HeadRef      string

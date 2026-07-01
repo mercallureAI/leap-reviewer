@@ -73,9 +73,22 @@ func TestMultiAdapterRejectsGitHubPullRequestBodyUpdate(t *testing.T) {
 	}
 }
 
+func TestMultiAdapterRoutesRepositoryPermissionByPlatform(t *testing.T) {
+	gitea := fakeAdapter{permission: core.RepositoryPermission{Push: true}}
+	m := MultiAdapter{Gitea: gitea}
+	permission, err := m.GetRepositoryPermission(context.Background(), config.EffectiveRepositoryConfig{Platform: "gitea"}, "alice")
+	if err != nil {
+		t.Fatalf("GetRepositoryPermission() error = %v", err)
+	}
+	if !permission.Push {
+		t.Fatal("Push = false, want true")
+	}
+}
+
 type fakeAdapter struct {
 	ctx review.PullRequestContext
 	err error
+	permission core.RepositoryPermission
 }
 
 func (f fakeAdapter) GetPullRequestContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error) {
@@ -84,6 +97,10 @@ func (f fakeAdapter) GetPullRequestContext(context.Context, config.EffectiveRepo
 
 func (f fakeAdapter) GetAskContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error) {
 	return f.ctx, f.err
+}
+
+func (f fakeAdapter) GetRepositoryPermission(context.Context, config.EffectiveRepositoryConfig, string) (core.RepositoryPermission, error) {
+	return f.permission, f.err
 }
 
 func (f fakeAdapter) PublishReview(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, core.ReviewResult) error {

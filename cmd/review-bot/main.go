@@ -202,7 +202,7 @@ func runDaemon(logger *slog.Logger, multiAdapter platformadapter.MultiAdapter, p
 		Progress:  progressLogger(logger),
 	}
 	logger.Info("starting daemon", slog.String("listen", cmd.Listen), slog.String("instance", cmd.Instance))
-	handler := server.Handler{InstanceKey: cmd.Instance, Adapter: gitea.Adapter{}, Loader: loaded, Reviewer: reviewer, Publisher: publisher, AskReviewer: askReviewer, CommentPublisher: multiAdapter, SummarizeReviewer: summarizeReviewer, BodyUpdater: multiAdapter}
+	handler := server.Handler{InstanceKey: cmd.Instance, Adapter: gitea.Adapter{}, Loader: loaded, Reviewer: reviewer, Publisher: publisher, AskReviewer: askReviewer, CommentPublisher: multiAdapter, SummarizeReviewer: summarizeReviewer, BodyUpdater: multiAdapter, PermissionChecker: multiAdapter}
 	return http.ListenAndServe(cmd.Listen, handler)
 }
 

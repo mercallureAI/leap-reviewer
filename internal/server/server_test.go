@@ -185,9 +185,9 @@ func TestHandlerUpdatesPullRequestBodyForSummarizeWhenAllowed(t *testing.T) {
 		Owner: "team", Repo: "repo", Platform: "gitea", Auth: config.ResolvedAuth{WebhookSecret: "secret"},
 		Config: config.Config{DefaultProfile: "default", EnabledProfiles: []string{"default"}, CommandReviewEnabled: true, AllowedCommands: []string{"review", "ask", "summarize"}},
 	}, profile: profiles.Definition{Name: "default"}}
-	summarizeReviewer := &fakeSummarizeReviewer{result: core.SummarizeResult{Body: "new body", OriginalBody: "original body"}}
+	summarizeReviewer := &fakeSummarizeReviewer{result: core.SummarizeResult{Body: "new body", OriginalBody: "original body", Source: "alice", OriginalAuthor: "alice"}}
 	bodyUpdater := &fakeBodyUpdater{}
-	handler := Handler{InstanceKey: "corp-gitea", Loader: loader, SummarizeReviewer: summarizeReviewer, BodyUpdater: bodyUpdater}
+	handler := Handler{InstanceKey: "corp-gitea", Loader: loader, SummarizeReviewer: summarizeReviewer, BodyUpdater: bodyUpdater, CommentPublisher: &fakeCommentPublisher{}, PermissionChecker: fakePermissionChecker{permission: core.RepositoryPermission{Push: false}}}
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
 	req.Header.Set("X-Gitea-Event", "issue_comment")
@@ -201,6 +201,69 @@ func TestHandlerUpdatesPullRequestBodyForSummarizeWhenAllowed(t *testing.T) {
 	want := "original body\n\n---\n\n<!-- review-bot:summarized source=alice -->\n\nnew body"
 	if got := bodyUpdater.body; got != want {
 		t.Fatalf("body = %q, want %q", got, want)
+	}
+}
+
+func TestHandlerUpdatesPullRequestBodyForSummarizeWhenUserHasWritePermission(t *testing.T) {
+	body := []byte(`{
+		"action": "created",
+		"is_pull": true,
+		"comment": {"body": "/summarize", "id": 12},
+		"repository": {"owner": {"username": "team"}, "name": "repo"},
+		"issue": {"number": 42},
+		"sender": {"username": "bob"}
+	}`)
+	loader := fakeLoader{cfg: config.EffectiveRepositoryConfig{Owner: "team", Repo: "repo", Platform: "gitea", Auth: config.ResolvedAuth{WebhookSecret: "secret"}, Config: config.Config{DefaultProfile: "default", EnabledProfiles: []string{"default"}, CommandReviewEnabled: true, AllowedCommands: []string{"summarize"}}}, profile: profiles.Definition{Name: "default"}}
+	summarizeReviewer := &fakeSummarizeReviewer{result: core.SummarizeResult{Body: "new body", OriginalBody: "original body", OriginalAuthor: "alice"}}
+	bodyUpdater := &fakeBodyUpdater{}
+	handler := Handler{InstanceKey: "corp-gitea", Loader: loader, SummarizeReviewer: summarizeReviewer, BodyUpdater: bodyUpdater, CommentPublisher: &fakeCommentPublisher{}, PermissionChecker: fakePermissionChecker{permission: core.RepositoryPermission{Push: true}}}
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("X-Gitea-Event", "issue_comment")
+	req.Header.Set("X-Gitea-Signature", signature("secret", body))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusAccepted)
+	}
+	if got := bodyUpdater.body; got == "" {
+		t.Fatal("body updater did not run")
+	}
+}
+
+func TestHandlerFallsBackToCommentForSummarizeWithoutPermission(t *testing.T) {
+	body := []byte(`{
+		"action": "created",
+		"is_pull": true,
+		"comment": {"body": "/summarize", "id": 12},
+		"repository": {"owner": {"username": "team"}, "name": "repo"},
+		"issue": {"number": 42},
+		"sender": {"username": "bob"}
+	}`)
+	loader := fakeLoader{cfg: config.EffectiveRepositoryConfig{Owner: "team", Repo: "repo", Platform: "gitea", Auth: config.ResolvedAuth{WebhookSecret: "secret"}, Config: config.Config{DefaultProfile: "default", EnabledProfiles: []string{"default"}, CommandReviewEnabled: true, AllowedCommands: []string{"summarize"}}}, profile: profiles.Definition{Name: "default"}}
+	summarizeReviewer := &fakeSummarizeReviewer{result: core.SummarizeResult{Body: "new body", OriginalBody: "original body", OriginalAuthor: "alice"}}
+	commentPublisher := &fakeCommentPublisher{}
+	bodyUpdater := &fakeBodyUpdater{}
+	handler := Handler{InstanceKey: "corp-gitea", Loader: loader, SummarizeReviewer: summarizeReviewer, BodyUpdater: bodyUpdater, CommentPublisher: commentPublisher, PermissionChecker: fakePermissionChecker{permission: core.RepositoryPermission{Push: false}}}
+
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
+	req.Header.Set("X-Gitea-Event", "issue_comment")
+	req.Header.Set("X-Gitea-Signature", signature("secret", body))
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusAccepted)
+	}
+	if got := bodyUpdater.body; got != "" {
+		t.Fatalf("body updater should not run, got %q", got)
+	}
+	if !strings.Contains(commentPublisher.body, "@bob 你当前没有修改这个 PR 描述的权限") {
+		t.Fatalf("comment body = %q, want permission explanation", commentPublisher.body)
+	}
+	if !strings.Contains(commentPublisher.body, "new body") {
+		t.Fatalf("comment body = %q, want summary body", commentPublisher.body)
 	}
 }
 
@@ -219,7 +282,8 @@ func TestHandlerSkipsSummarizeWhenAlreadySummarized(t *testing.T) {
 	}, profile: profiles.Definition{Name: "default"}}
 	summarizeReviewer := &fakeSummarizeReviewer{result: core.SummarizeResult{AlreadySummarized: true, Source: "alice", OriginalBody: "original body"}}
 	bodyUpdater := &fakeBodyUpdater{}
-	handler := Handler{InstanceKey: "corp-gitea", Loader: loader, SummarizeReviewer: summarizeReviewer, BodyUpdater: bodyUpdater}
+	commentPublisher := &fakeCommentPublisher{}
+	handler := Handler{InstanceKey: "corp-gitea", Loader: loader, SummarizeReviewer: summarizeReviewer, BodyUpdater: bodyUpdater, CommentPublisher: commentPublisher}
 
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(string(body)))
 	req.Header.Set("X-Gitea-Event", "issue_comment")
@@ -232,6 +296,9 @@ func TestHandlerSkipsSummarizeWhenAlreadySummarized(t *testing.T) {
 	}
 	if got := bodyUpdater.body; got != "" {
 		t.Fatalf("body updater should not run, got %q", got)
+	}
+	if !strings.Contains(commentPublisher.body, "已经由 alice 总结过") {
+		t.Fatalf("comment body = %q, want already summarized notice", commentPublisher.body)
 	}
 }
 
@@ -276,6 +343,12 @@ type fakeBodyUpdater struct{ body string }
 func (f *fakeBodyUpdater) UpdatePullRequestBody(_ context.Context, _ config.EffectiveRepositoryConfig, _ core.ReviewRequest, body string) error {
 	f.body = body
 	return nil
+}
+
+type fakePermissionChecker struct{ permission core.RepositoryPermission }
+
+func (f fakePermissionChecker) GetRepositoryPermission(context.Context, config.EffectiveRepositoryConfig, string) (core.RepositoryPermission, error) {
+	return f.permission, nil
 }
 
 func signature(secret string, body []byte) string {

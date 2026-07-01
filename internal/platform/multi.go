@@ -20,9 +20,21 @@ type MultiAdapter struct {
 type Adapter interface {
 	GetPullRequestContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error)
 	GetAskContext(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest) (review.PullRequestContext, error)
+	GetRepositoryPermission(context.Context, config.EffectiveRepositoryConfig, string) (core.RepositoryPermission, error)
 	PublishReview(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, core.ReviewResult) error
 	PublishComment(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error
 	UpdatePullRequestBody(context.Context, config.EffectiveRepositoryConfig, core.ReviewRequest, string) error
+}
+
+func (m MultiAdapter) GetRepositoryPermission(ctx context.Context, effective config.EffectiveRepositoryConfig, username string) (core.RepositoryPermission, error) {
+	switch effective.Platform {
+	case "gitea":
+		return m.Gitea.GetRepositoryPermission(ctx, effective, username)
+	case "github":
+		return m.GitHub.GetRepositoryPermission(ctx, effective, username)
+	default:
+		return core.RepositoryPermission{}, fmt.Errorf("unsupported platform %q", effective.Platform)
+	}
 }
 
 func (m MultiAdapter) GetAskContext(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest) (review.PullRequestContext, error) {
