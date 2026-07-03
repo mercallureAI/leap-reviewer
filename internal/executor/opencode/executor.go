@@ -3,6 +3,7 @@ package opencode
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,18 +94,36 @@ func (e Executor) Execute(ctx context.Context, req Request) (Result, error) {
 	cmd.Stdout = stdoutFile
 	cmd.Stderr = stderrFile
 
+	slog.InfoContext(ctx, "starting opencode",
+		slog.String("workspace", workspacePath),
+		slog.String("model", modelRef),
+		slog.Int("timeout_seconds", req.TimeoutSeconds),
+	)
 	if err := cmd.Start(); err != nil {
+		slog.ErrorContext(ctx, "failed to start opencode", slog.String("error", err.Error()))
 		return Result{}, err
 	}
+	slog.InfoContext(ctx, "opencode started", slog.Int("pid", cmd.Process.Pid))
 	if ctx.Done() != nil {
 		go func() {
 			<-ctx.Done()
 			if cmd.Process != nil {
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				slog.WarnContext(ctx, "opencode timeout reached",
+					slog.Int("pid", cmd.Process.Pid),
+					slog.String("context_error", ctx.Err().Error()),
+					slog.String("kill_error", errorString(err)),
+				)
 			}
 		}()
 	}
+	slog.InfoContext(ctx, "waiting for opencode", slog.Int("pid", cmd.Process.Pid))
 	err = cmd.Wait()
+	slog.InfoContext(ctx, "opencode wait returned",
+		slog.Int("pid", cmd.Process.Pid),
+		slog.String("wait_error", errorString(err)),
+		slog.String("context_error", errorString(ctx.Err())),
+	)
 	result := Result{}
 	if stdoutBytes, readErr := os.ReadFile(stdoutFile.Name()); readErr == nil {
 		result.Stdout = string(stdoutBytes)
@@ -127,7 +146,28 @@ func (e Executor) Execute(ctx context.Context, req Request) (Result, error) {
 
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		result.ExitCode = exitErr.ExitCode()
+		slog.ErrorContext(ctx, "opencode exited with error",
+			slog.Int("pid", cmd.Process.Pid),
+			slog.Int("exit_code", result.ExitCode),
+			slog.String("stdout", summarizeLogOutput(result.Stdout)),
+			slog.String("stderr", summarizeLogOutput(result.Stderr)),
+		)
 		return result, fmt.Errorf("opencode exited with code %d: %w: %s", result.ExitCode, err, strings.TrimSpace(result.Stderr))
 	}
 	return result, err
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func summarizeLogOutput(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) <= 500 {
+		return trimmed
+	}
+	return trimmed[:500]
 }

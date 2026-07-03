@@ -1,8 +1,10 @@
 package opencode
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -225,5 +227,91 @@ func TestExecuteReturnsWhenChildKeepsStdoutOpen(t *testing.T) {
 	}
 	if time.Since(start) >= 4*time.Second {
 		t.Fatalf("Execute() waited too long for detached child output")
+	}
+}
+
+func TestExecuteLogsTimeoutLifecycle(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	workDir := filepath.Join(root, "work")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir work: %v", err)
+	}
+
+	script := "#!/bin/sh\n" +
+		"sleep 5\n"
+	if err := os.WriteFile(filepath.Join(binDir, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake opencode: %v", err)
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	previous := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(previous)
+
+	exec := Executor{}
+	_, err := exec.Execute(context.Background(), Request{
+		Provider:       "openai",
+		Model:          "gpt-5.4",
+		Workspace:      workDir,
+		Prompt:         "answer this question",
+		TimeoutSeconds: 1,
+		ExtraEnv:       []string{"PATH=" + binDir + ":" + os.Getenv("PATH")},
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want timeout error")
+	}
+	output := logs.String()
+	for _, want := range []string{"starting opencode", "waiting for opencode", "opencode timeout reached", "opencode wait returned"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("logs %q do not contain %q", output, want)
+		}
+	}
+}
+
+func TestExecuteLogsExitFailureDetails(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	workDir := filepath.Join(root, "work")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir work: %v", err)
+	}
+
+	script := "#!/bin/sh\n" +
+		"printf 'fatal stderr marker\\n' >&2\n" +
+		"exit 7\n"
+	if err := os.WriteFile(filepath.Join(binDir, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake opencode: %v", err)
+	}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	previous := slog.Default()
+	slog.SetDefault(logger)
+	defer slog.SetDefault(previous)
+
+	exec := Executor{}
+	_, err := exec.Execute(context.Background(), Request{
+		Provider:  "openai",
+		Model:     "gpt-5.4",
+		Workspace: workDir,
+		Prompt:    "answer this question",
+		ExtraEnv:  []string{"PATH=" + binDir + ":" + os.Getenv("PATH")},
+	})
+	if err == nil {
+		t.Fatal("Execute() error = nil, want exit error")
+	}
+	output := logs.String()
+	for _, want := range []string{"opencode wait returned", "opencode exited with error", "fatal stderr marker"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("logs %q do not contain %q", output, want)
+		}
 	}
 }
