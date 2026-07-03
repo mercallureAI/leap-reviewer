@@ -188,3 +188,42 @@ func TestExecuteRespectsTimeoutSeconds(t *testing.T) {
 		t.Fatalf("timeout did not stop execution early")
 	}
 }
+
+func TestExecuteReturnsWhenChildKeepsStdoutOpen(t *testing.T) {
+	root := t.TempDir()
+	binDir := filepath.Join(root, "bin")
+	workDir := filepath.Join(root, "work")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	if err := os.MkdirAll(workDir, 0o755); err != nil {
+		t.Fatalf("mkdir work: %v", err)
+	}
+
+	script := "#!/bin/sh\n" +
+		"(sleep 5; printf \"late child output\\n\") &\n" +
+		"printf 'parent done\\n'\n" +
+		"exit 0\n"
+	if err := os.WriteFile(filepath.Join(binDir, "opencode"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake opencode: %v", err)
+	}
+
+	start := time.Now()
+	exec := Executor{}
+	result, err := exec.Execute(context.Background(), Request{
+		Provider:  "openai",
+		Model:     "gpt-5.4",
+		Workspace: workDir,
+		Prompt:    "answer this question",
+		ExtraEnv:  []string{"PATH=" + binDir + ":" + os.Getenv("PATH")},
+	})
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if got, want := strings.TrimSpace(result.Stdout), "parent done"; got != want {
+		t.Fatalf("Stdout = %q, want %q", got, want)
+	}
+	if time.Since(start) >= 4*time.Second {
+		t.Fatalf("Execute() waited too long for detached child output")
+	}
+}

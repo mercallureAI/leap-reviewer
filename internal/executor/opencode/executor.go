@@ -1,7 +1,6 @@
 package opencode
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -75,10 +74,24 @@ func (e Executor) Execute(ctx context.Context, req Request) (Result, error) {
 		cmd.Env = append(cmd.Env, "OPENCODE_RESULT_PATH="+resultPath)
 	}
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdoutFile, err := os.CreateTemp("", "opencode-stdout-*")
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() {
+		_ = stdoutFile.Close()
+		_ = os.Remove(stdoutFile.Name())
+	}()
+	stderrFile, err := os.CreateTemp("", "opencode-stderr-*")
+	if err != nil {
+		return Result{}, err
+	}
+	defer func() {
+		_ = stderrFile.Close()
+		_ = os.Remove(stderrFile.Name())
+	}()
+	cmd.Stdout = stdoutFile
+	cmd.Stderr = stderrFile
 
 	if err := cmd.Start(); err != nil {
 		return Result{}, err
@@ -92,7 +105,13 @@ func (e Executor) Execute(ctx context.Context, req Request) (Result, error) {
 		}()
 	}
 	err = cmd.Wait()
-	result := Result{Stdout: stdout.String(), Stderr: stderr.String()}
+	result := Result{}
+	if stdoutBytes, readErr := os.ReadFile(stdoutFile.Name()); readErr == nil {
+		result.Stdout = string(stdoutBytes)
+	}
+	if stderrBytes, readErr := os.ReadFile(stderrFile.Name()); readErr == nil {
+		result.Stderr = string(stderrBytes)
+	}
 	if ctx.Err() == context.DeadlineExceeded {
 		return result, fmt.Errorf("opencode timed out after %d seconds: %w", req.TimeoutSeconds, ctx.Err())
 	}
