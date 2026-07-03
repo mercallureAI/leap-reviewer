@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -128,59 +129,68 @@ func (h Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
+	w.WriteHeader(http.StatusAccepted)
+	go h.executeAcceptedWebhook(context.WithoutCancel(r.Context()), effective, req)
+}
+
+func (h Handler) executeAcceptedWebhook(ctx context.Context, effective config.EffectiveRepositoryConfig, req core.ReviewRequest) {
 	if commandName(req.CommandText) == "summarize" {
-		result, err := h.SummarizeReviewer.Execute(r.Context(), req)
+		result, err := h.SummarizeReviewer.Execute(ctx, req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			h.logWebhookError(req, "summarize execution failed", err)
 			return
 		}
 		if result.AlreadySummarized {
 			if h.CommentPublisher != nil {
-				_ = h.CommentPublisher.PublishComment(r.Context(), effective, req, formatSummarizeAlreadySummarized(req.TriggerUser, result.Source))
+				if err := h.CommentPublisher.PublishComment(ctx, effective, req, formatSummarizeAlreadySummarized(req.TriggerUser, result.Source)); err != nil {
+					h.logWebhookError(req, "publish summarize skip comment failed", err)
+				}
 			}
-			w.WriteHeader(http.StatusAccepted)
 			return
 		}
-		if !canUpdatePullRequestBody(req.TriggerUser, result.OriginalAuthor, r.Context(), effective, h.PermissionChecker) {
-			if err := h.CommentPublisher.PublishComment(r.Context(), effective, req, formatSummarizePermissionDenied(req.TriggerUser, result.Body)); err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
+		if !canUpdatePullRequestBody(req.TriggerUser, result.OriginalAuthor, ctx, effective, h.PermissionChecker) {
+			if err := h.CommentPublisher.PublishComment(ctx, effective, req, formatSummarizePermissionDenied(req.TriggerUser, result.Body)); err != nil {
+				h.logWebhookError(req, "publish summarize permission comment failed", err)
 			}
-			w.WriteHeader(http.StatusAccepted)
 			return
 		}
 		body := summarizeservice.BuildPublishedBody(result.OriginalBody, req.TriggerUser, result.Body)
-		if err := h.BodyUpdater.UpdatePullRequestBody(r.Context(), effective, req, body); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		if err := h.BodyUpdater.UpdatePullRequestBody(ctx, effective, req, body); err != nil {
+			h.logWebhookError(req, "update pull request body failed", err)
 		}
-		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 	if req.QuestionText != "" {
-		result, err := h.AskReviewer.Execute(r.Context(), req)
+		result, err := h.AskReviewer.Execute(ctx, req)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			h.logWebhookError(req, "ask execution failed", err)
 			return
 		}
-		if err := h.CommentPublisher.PublishComment(r.Context(), effective, req, formatAskComment(req.TriggerUser, req.QuestionText, result.Answer)); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+		if err := h.CommentPublisher.PublishComment(ctx, effective, req, formatAskComment(req.TriggerUser, req.QuestionText, result.Answer)); err != nil {
+			h.logWebhookError(req, "publish ask comment failed", err)
 		}
-		w.WriteHeader(http.StatusAccepted)
 		return
 	}
 
-	result, err := h.Reviewer.Execute(r.Context(), req)
+	result, err := h.Reviewer.Execute(ctx, req)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		h.logWebhookError(req, "review execution failed", err)
 		return
 	}
-	if err := h.Publisher.Publish(r.Context(), effective, req, result); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	if err := h.Publisher.Publish(ctx, effective, req, result); err != nil {
+		h.logWebhookError(req, "publish review failed", err)
 	}
-	w.WriteHeader(http.StatusAccepted)
+}
+
+func (h Handler) logWebhookError(req core.ReviewRequest, message string, err error) {
+	slog.Error(message,
+		slog.String("owner", req.Owner),
+		slog.String("repo", req.Repo),
+		slog.Int("pr_number", req.PRNumber),
+		slog.Int("issue_number", req.IssueNumber),
+		slog.String("command", commandName(req.CommandText)),
+		slog.String("error", err.Error()),
+	)
 }
 
 func canUpdatePullRequestBody(triggerUser, originalAuthor string, ctx context.Context, effective config.EffectiveRepositoryConfig, checker interface {
